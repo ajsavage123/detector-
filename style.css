@@ -1,0 +1,168 @@
+:root {
+  --bg: #0f1115;
+  --card: #171a21;
+  --text: #e6e8ee;
+  --muted: #8b90a0;
+  --border: #262b36;
+  --green: #2ea043;
+  --amber: #d29922;
+  --red: #c62828;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  justify-content: center;
+  padding: 40px 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px 28px;
+  width: 100%;
+  max-width: 420px;
+}
+
+h1 {
+  font-size: 20px;
+  letter-spacing: 1px;
+  margin: 0 0 6px;
+}
+
+.status { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+
+.conds {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 12px;
+  letter-spacing: 0.3px;
+}
+
+.conds .ok { color: var(--green); }
+.conds .no { color: var(--red); }
+.status.ok    { color: var(--green); }
+.status.susp  { color: var(--amber); }
+.status.bad   { color: var(--red); }
+.status.paused{ color: var(--muted); }
+
+.warn {
+  background: var(--red);
+  color: #fff;
+  text-align: center;
+  font-weight: 700;
+  line-height: 1.5;
+  padding: 12px;
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+
+.hidden { display: none; }
+
+video {
+  width: 100%;
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+
+.vidwrap {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.vidwrap video {
+  display: block;
+  width: 100%;
+  margin: 0;
+  border-radius: 0;
+}
+
+.vidwrap canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.rows {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+
+.rows li {
+  display: flex;
+  justify-content: space-between;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.rows span { color: var(--muted); }
+
+.controls { display: flex; gap: 8px; }
+
+button {
+  background: #222736;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+button:hover { background: #2b3142; }
+button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+button.primary:hover { background: #388bfd; }
+
+.panel {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  display: grid;
+  gap: 11px;
+}
+
+/* .panel sets display:grid and is declared after .hidden, so the plain
+   .hidden rule loses the specificity tie — give the combo higher weight. */
+.panel.hidden { display: none; }
+
+.panel label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.panel label.check { gap: 6px; }
+
+input[type="range"] { flex: 1; }
+
+select {
+  background: #222736;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+
+.panel-btns { display: flex; gap: 8px; margin-top: 2px; }
+
+.msg {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--amber);
+  line-height: 1.5;
+}

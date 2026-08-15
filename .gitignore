@@ -1,0 +1,5 @@
+node_modules/
+.DS_Store
+
+# Local preview tooling (run docs, logs, db) — never commit these
+.freebuff/

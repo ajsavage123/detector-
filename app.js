@@ -1,0 +1,910 @@
+'use strict';
+
+/* ============================================================
+ * CONFIG — everything tunable lives here.
+ * Messages are the notification texts (one is picked at random).
+ * ============================================================ */
+
+const MESSAGES = [
+  'HEY. PUT THE PHONE DOWN.',
+  'Focus.',
+  'Come back to work.',
+  "You're distracted.",
+  'Put the phone away.',
+];
+
+// Escalation: keep holding the phone and the alerts get firmer.
+const MESSAGES_FIRM = [
+  'Still holding the phone. Put it down.',
+  'You are STILL on your phone.',
+  'Phone down. Back to work.',
+  "That's enough scrolling.",
+];
+const MESSAGES_STRONG = [
+  'STOP. PHONE DOWN. NOW.',
+  'PUT THE PHONE DOWN IMMEDIATELY.',
+  'ENOUGH. Put the phone away and work.',
+  'You have been ignoring this. PHONE DOWN.',
+];
+
+// headDownRatio: how far the nose must drop below the eye line before the
+//   head counts as "looking down" (lower = more sensitive). A frontal face
+//   is ~0.55-0.65; a head pitched down pushes it above ~0.7.
+// idleSeconds: how long keyboard/mouse must be quiet before it counts.
+const STRICTNESS = {
+  Low:    { headDownRatio: 0.78, idleSeconds: 12 },
+  Medium: { headDownRatio: 0.70, idleSeconds: 10 },
+  High:   { headDownRatio: 0.64, idleSeconds: 8 },
+};
+
+const DEFAULTS = {
+  cameraOn: true,          // Camera: ON/OFF
+  detectionDelay: 7,       // Detection delay: 5-30 s
+  cooldown: 60,            // Notification cooldown: 30-300 s
+  phoneSensitivity: 'Medium', // phone-detection confidence: Low / Medium / High
+  alertSound: 'voice',     // voice | beep | off
+  preview: false,          // open the camera feed in a small popup window
+};
+
+const VISION_FPS = 6;          // vision loop rate (~6 FPS, lightweight)
+const TICK_MS = 300;           // detector tick rate
+const ACTIVE_IF_IDLE_LESS_THAN = 3;   // input shown as "Active" under this (s)
+// Phone detection TRACKS A BOX across frames instead of trusting per-frame
+// scores. efficientdet_lite0 confuses hands with phones, so stray hand
+// detections — which jump around the frame — never sustain a track, while a
+// real phone (even half-hidden) moves smoothly and keeps its box alive.
+// The tracked box is drawn on the camera preview, following the phone.
+//   enter: confidence bar needed to START a track (needs 2 stable frames)
+//   exit:  a track dies after PHONE_RELEASE_FRAMES frames with no nearby hit
+// Sensitivity sets the MINIMUM score a phone-class detection needs to be
+// considered at all. Locking is decided by location stability, not score:
+// if the phone box stays put for a few frames, it's a phone. (The tiny
+// model scores real phones as low as 0.05-0.15, so a score bar alone would
+// never lock.)
+const PHONE_SENSITIVITY = {
+  Low:    { floor: 0.12 },   // require a fairly confident phone
+  Medium: { floor: 0.06 },   // balanced (default)
+  High:   { floor: 0.05 },   // lock on the weakest stable hint
+};
+const PHONE_CONFIRM_FRAMES = 3;   // location-stable candidate frames to lock (~0.5 s)
+const PHONE_RELEASE_FRAMES = 6;   // frames a track survives without a nearby hit (~1 s)
+const PHONE_MAX_MOVE = 0.30;      // max normalized jump between frames while tracking
+const PHONE_SHOW_MIN = 0.05;      // phone-class detections below this are ignored entirely
+
+const MEDIAPIPE_VERSION = '0.10.14';
+const VISION_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MEDIAPIPE_VERSION;
+const BUNDLE_URL = VISION_CDN + '/vision_bundle.mjs';
+const WASM_URL = VISION_CDN + '/wasm';
+const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite';
+const OBJ_MODEL = 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float16/1/efficientdet_lite2.tflite';
+const OBJ_MODEL_LITE0 = 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
+const SETTINGS_KEY = 'focus-guardian-settings';
+
+/* ============================================================
+ * State
+ * ============================================================ */
+
+const state = {
+  running: false,
+  ...loadSettings(),
+
+  lastKeyboard: performance.now(),
+  lastMouse: performance.now(),
+  lastInput: performance.now(),
+
+  faceSupported: false,   // MediaPipe face detector loaded
+  phoneSupported: false,  // object detector loaded
+  facePresent: false,
+  headDown: false,
+  phoneSeen: false,       // "phone in view" — true while a phone box is tracked
+  lastPhoneScore: 0,      // best phone-class score this frame (for the UI)
+  phoneSince: null,       // timestamp when the phone was first tracked (for the timer)
+  faceBox: null,          // normalized face box (drawn on the preview)
+  phoneBox: null,         // normalized tracked phone box (drawn on the preview)
+  initBox: null,          // live phone candidate box (dashed, while deciding)
+
+  suspiciousSince: null,
+  lastWarn: Number.NEGATIVE_INFINITY,  // so the very first warning always fires
+  warnCount: 0,             // warnings fired during the current hold episode
+  distracted: false,
+  wasDistracted: false,
+};
+
+let faceDetector = null;
+let objectDetector = null;
+let stream = null;
+let visionTimer = null;
+let detectorTimer = null;
+let previewWin = null;      // small popup window showing the camera feed
+let phoneTrack = null;      // normalized {x,y,w,h} of the tracked phone box
+let phoneTrackMisses = 0;   // consecutive frames without a nearby match
+let initCand = null;        // last strong candidate (while starting a track)
+let initStreak = 0;         // consecutive location-stable candidates
+let initMisses = 0;         // frames with no nearby candidate during init
+
+const $ = (id) => document.getElementById(id);
+const video = $('preview');
+
+/* ============================================================
+ * Input tracking — timestamps only, never content
+ * ============================================================ */
+
+function markInput(kind) {
+  const now = performance.now();
+  state.lastInput = now;
+  if (kind === 'key') state.lastKeyboard = now;
+  if (kind === 'mouse') state.lastMouse = now;
+}
+// A hand resting on the mouse jitters it constantly — that would keep the
+// "idle" condition never true. Only count a mouse move as activity if it's a
+// real movement (>12 px) or the first event in a while (>600 ms).
+let lastMouseX = -1;
+let lastMouseY = -1;
+let lastMouseMoveAt = 0;
+window.addEventListener('keydown', () => markInput('key'));
+window.addEventListener('mousemove', (e) => {
+  const now = performance.now();
+  const moved = Math.hypot(e.clientX - lastMouseX, e.clientY - lastMouseY) >= 12 ||
+                now - lastMouseMoveAt > 600;
+  lastMouseX = e.clientX;
+  lastMouseY = e.clientY;
+  if (moved) {
+    lastMouseMoveAt = now;
+    markInput('mouse');
+  }
+});
+window.addEventListener('mousedown', () => markInput('mouse'));
+window.addEventListener('wheel', () => markInput('mouse'));
+window.addEventListener('touchstart', () => markInput('mouse'));
+
+function idleSeconds() {
+  return (performance.now() - state.lastInput) / 1000;
+}
+
+/* ============================================================
+ * Vision — MediaPipe Tasks (runs fully in the browser)
+ * ============================================================ */
+
+async function loadModels() {
+  setMsg('Loading detection models (first time only, ~7 MB)...');
+  try {
+    const Vision = await import(BUNDLE_URL);  // MediaPipe Tasks Vision (ESM)
+    const vision = await Vision.FilesetResolver.forVisionTasks(WASM_URL);
+    faceDetector = await createDetector(
+      Vision.FaceDetector, vision, FACE_MODEL,
+      { minDetectionConfidence: 0.5 });
+    state.faceSupported = faceDetector !== null;
+    // Low pre-filter: let weak/partial detections through so the tracking
+    // logic below can judge them (maxResults caps the CPU cost).
+    objectDetector = await createDetector(
+      Vision.ObjectDetector, vision, OBJ_MODEL,
+      { minDetectionConfidence: 0.05, maxResults: 10 });
+    if (!objectDetector && OBJ_MODEL !== OBJ_MODEL_LITE0) {
+      // Fall back to the lighter model if the bigger one won't load.
+      objectDetector = await createDetector(
+        Vision.ObjectDetector, vision, OBJ_MODEL_LITE0,
+        { minDetectionConfidence: 0.05, maxResults: 10 });
+    }
+    state.phoneSupported = objectDetector !== null;
+  } catch (err) {
+    console.warn('Model loading failed:', err);
+  }
+  if (!state.faceSupported || !state.phoneSupported) {
+    setMsg('MediaPipe/models failed to load from the CDN. Check your internet connection, then reload.');
+  } else {
+    setMsg('Models ready.');
+  }
+}
+
+async function createDetector(Cls, vision, modelPath, extra) {
+  if (!Cls) return null;
+  for (const delegate of ['GPU', 'CPU']) {
+    try {
+      return await Cls.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: modelPath, delegate },
+        runningMode: 'VIDEO',
+        ...extra,
+      });
+    } catch (err) {
+      console.warn(Cls.name + ' failed with delegate ' + delegate + ':', err);
+    }
+  }
+  return null;
+}
+
+function visionTick() {
+  if (!state.running || !video.videoWidth) return;
+  const ts = performance.now();
+
+  // Reset the per-frame score so the status row always reflects the CURRENT
+  // frame (otherwise a stale score lingers next to a fresh "not detected").
+  state.lastPhoneScore = 0;
+
+  let facePresent = false;
+  let headDown = false;
+  state.faceBox = null;
+  if (faceDetector) {
+    try {
+      const res = faceDetector.detectForVideo(video, ts);
+      const det = res && res.detections && res.detections[0];
+      if (det) {
+        facePresent = true;
+        if (det.boundingBox) {
+          // MediaPipe gives pixel coordinates; store normalized 0-1 boxes.
+          state.faceBox = {
+            x: det.boundingBox.originX / video.videoWidth,
+            y: det.boundingBox.originY / video.videoHeight,
+            w: det.boundingBox.width / video.videoWidth,
+            h: det.boundingBox.height / video.videoHeight,
+          };
+        }
+        const strict = STRICTNESS[state.strictness] || STRICTNESS.Medium;
+        headDown = headDownRatio(det.keypoints) >= strict.headDownRatio;
+      }
+    } catch (err) { /* skip frame */ }
+  }
+
+  // Run the object detector. Only phone-class detections are used/drawn —
+  // everything the model labels is checked across ALL of its categories
+  // because a real phone is often the 2nd/3rd hypothesis (e.g. below "book").
+  // cands = candidates strong enough to track (>= sensitivity floor);
+  // liveCand = the best phone detection at all (for the dashed "phone?" box).
+  const sens = PHONE_SENSITIVITY[state.phoneSensitivity] || PHONE_SENSITIVITY.Medium;
+  const cands = [];
+  let liveCand = null;
+  if (objectDetector) {
+    try {
+      const res = objectDetector.detectForVideo(video, ts);
+      for (const d of (res.detections || [])) {
+        let phoneCat = null;  // best phone-class category, if any
+        for (const cat of (d.categories || [])) {
+          if (cat && cat.categoryName && /phone/i.test(cat.categoryName) &&
+              (!phoneCat || cat.score > phoneCat.score)) phoneCat = cat;
+        }
+        if (!phoneCat || !d.boundingBox) continue;
+        // MediaPipe gives pixel coordinates — normalize to 0-1 first so
+        // PHONE_MAX_MOVE and the size filter behave like true fractions.
+        const b = d.boundingBox;
+        const nw = b.width / video.videoWidth;
+        const nh = b.height / video.videoHeight;
+        if (nw <= 0 || nh <= 0) continue;
+        const nx = b.originX / video.videoWidth;
+        const ny = b.originY / video.videoHeight;
+        if (phoneCat.score > state.lastPhoneScore) state.lastPhoneScore = phoneCat.score;
+        if (phoneCat.score >= PHONE_SHOW_MIN && nw * nh >= 0.004) {
+          const cand = {
+            x: nx, y: ny, w: nw, h: nh,
+            cx: nx + nw / 2, cy: ny + nh / 2,
+            score: phoneCat.score,
+          };
+          if (!liveCand || phoneCat.score > liveCand.score) liveCand = cand;
+          if (phoneCat.score >= sens.floor) cands.push(cand);
+        }
+      }
+    } catch (err) { /* skip frame */ }
+  }
+
+  // Box tracking: keep the phone's box alive and following it. A real phone
+  // moves smoothly frame to frame; hands flashing through the camera produce
+  // detections that jump around and can't sustain a track — so they don't
+  // flip the status.
+  if (phoneTrack) {
+    let best = null;
+    let bestD = Infinity;
+    const tx = phoneTrack.x + phoneTrack.w / 2;
+    const ty = phoneTrack.y + phoneTrack.h / 2;
+    for (const c of cands) {
+      const d = Math.hypot(c.cx - tx, c.cy - ty);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    if (best && bestD <= PHONE_MAX_MOVE) {
+      // Smooth the box toward the match so it follows rather than jitters.
+      const k = 0.5;
+      phoneTrack.x += k * (best.x - phoneTrack.x);
+      phoneTrack.y += k * (best.y - phoneTrack.y);
+      phoneTrack.w += k * (best.w - phoneTrack.w);
+      phoneTrack.h += k * (best.h - phoneTrack.h);
+      phoneTrackMisses = 0;
+      state.phoneSeen = true;
+    } else {
+      phoneTrackMisses++;
+      if (phoneTrackMisses >= PHONE_RELEASE_FRAMES) {
+        phoneTrack = null;
+        phoneTrackMisses = 0;
+        state.phoneSeen = false;
+      }
+    }
+  } else {
+    // No track yet: lock after a few LOCATION-STABLE candidate frames. The
+    // score bar is deliberately out of the equation — if the box stays put
+    // for ~0.5 s it's a phone. A hand flashing through the frame moves too
+    // much frame to frame to ever satisfy this, so it still can't lock.
+    if (initCand) {
+      const scx = initCand.x + initCand.w / 2;
+      const scy = initCand.y + initCand.h / 2;
+      const near = cands
+        .filter((c) => Math.hypot(c.cx - scx, c.cy - scy) <= PHONE_MAX_MOVE)
+        .sort((a, b) => b.score - a.score)[0];
+      if (near) {
+        initStreak++;
+        initCand = { x: near.x, y: near.y, w: near.w, h: near.h };
+        initMisses = 0;
+      } else {
+        initMisses++;
+        if (initMisses >= 2) {
+          initCand = null;
+          initStreak = 0;
+          initMisses = 0;
+        }
+      }
+    } else if (cands.length) {
+      const best = cands.slice().sort((a, b) => b.score - a.score)[0];
+      initCand = { x: best.x, y: best.y, w: best.w, h: best.h };
+      initStreak = 1;
+      initMisses = 0;
+    }
+    if (initStreak >= PHONE_CONFIRM_FRAMES) {
+      phoneTrack = { x: initCand.x, y: initCand.y, w: initCand.w, h: initCand.h };
+      initCand = null;
+      initStreak = 0;
+      initMisses = 0;
+      state.phoneSeen = true;
+    }
+  }
+
+  state.phoneBox = phoneTrack
+    ? { x: phoneTrack.x, y: phoneTrack.y, w: phoneTrack.w, h: phoneTrack.h } : null;
+
+  // Phone-usage timer: start it the moment the phone is first tracked, reset
+  // it when the track dies.
+  if (state.phoneSeen && state.phoneSince === null) state.phoneSince = performance.now();
+  if (!state.phoneSeen) state.phoneSince = null;
+
+  // ALWAYS surface the model's best live phone candidate as the dashed
+  // "phone?" box — even below the sensitivity floor. If the detector emits
+  // anything phone-like at all, you SEE it on the preview (the solid box
+  // only appears once the track locks).
+  state.initBox = (!phoneTrack && liveCand)
+    ? { x: liveCand.x, y: liveCand.y, w: liveCand.w, h: liveCand.h, score: liveCand.score } : null;
+
+  state.facePresent = facePresent;
+  state.headDown = headDown;
+  drawOverlays();
+}
+
+function headDownRatio(keypoints) {
+  if (!keypoints || keypoints.length < 4) return 0;
+  // 0 right eye, 1 left eye, 2 nose tip, 3 mouth center (normalized 0-1)
+  const eyeY = (keypoints[0].y + keypoints[1].y) / 2;
+  const eyeX = (keypoints[0].x + keypoints[1].x) / 2;
+  const nose = keypoints[2];
+  const mouth = keypoints[3];
+  const eyeToMouth = mouth.y - eyeY;
+  if (eyeToMouth <= 1e-6) return 0;
+  const ratio = (nose.y - eyeY) / eyeToMouth;
+  const eyeWidth = Math.abs(keypoints[1].x - keypoints[0].x);
+  const sideways = eyeWidth > 1e-6 && Math.abs(nose.x - eyeX) > 0.5 * eyeWidth;
+  return sideways ? 0 : ratio;
+}
+
+/* ============================================================
+ * Distraction rule + notification
+ * ============================================================ */
+
+function detectorTick() {
+  if (!state.running) return;
+  const now = performance.now();
+
+  // A warning fires whenever the phone is being held (tracked) — no face /
+  // head-down requirement. While the phone STAYS held, warnings keep coming
+  // back with escalating, dynamic messages until you put it down.
+  const holding = state.phoneSupported && state.phoneSeen;
+
+  if (!holding) {
+    state.suspiciousSince = null;
+    state.distracted = false;
+    state.warnCount = 0;      // escalation restarts per hold episode
+    updateUI();
+    return;
+  }
+
+  if (state.suspiciousSince === null) state.suspiciousSince = now;
+  state.distracted = now - state.suspiciousSince >= state.detectionDelay * 1000;
+
+  if (state.distracted) {
+    // First warning of an episode waits the cooldown (quick pick-up/put-down
+    // doesn't spam). While still held, repeats come faster and faster, and
+    // are gentler if you're actively working (typing / moving the mouse).
+    const working = idleSeconds() < 8;
+    const gapNeeded = state.warnCount === 0
+      ? state.cooldown * 1000
+      : escalateInterval(state.warnCount, working) * 1000;
+    if (now - state.lastWarn >= gapNeeded) {
+      state.lastWarn = now;
+      state.warnCount++;
+      notify(pickMessage(state.warnCount, working));
+    }
+  }
+
+  state.wasDistracted = state.distracted;
+  updateUI();
+}
+
+function escalateInterval(warnCount, working) {
+  // Each repeat is quicker; nag slower if you're actively working.
+  const base = working ? 26 : 16;
+  return Math.max(8, base - warnCount * 2);
+}
+
+function pickMessage(warnCount, working) {
+  let pool;
+  if (working || warnCount <= 1) pool = MESSAGES;
+  else if (warnCount <= 3) pool = MESSAGES_FIRM;
+  else pool = MESSAGES_STRONG;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function randomMessage() {
+  return MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
+}
+
+function fmtSec(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m + ':' + String(s).padStart(2, '0');
+}
+
+function notify(message) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      new Notification('FOCUS GUARDIAN', { body: message, tag: 'focus-guardian' });
+    } catch (err) { /* banner below still shows */ }
+  }
+  playAlert(message);
+  $('warn').textContent = '⚠ DISTRACTION DETECTED\n' + message;
+  updateUI();
+}
+
+/* ============================================================
+ * Sound alerts — a spoken warning (or a beep when speech is off/unavailable)
+ * ============================================================ */
+
+let audioCtx = null;
+
+function ensureAudio() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    try { audioCtx = new AC(); } catch (err) { return null; }
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
+  return audioCtx;
+}
+
+function playAlert(message) {
+  const mode = state.alertSound || 'voice';
+  if (mode === 'off') return;
+  if (mode === 'voice' && 'speechSynthesis' in window) {
+    try {
+      speechSynthesis.cancel(); // don't stack warnings
+      const u = new SpeechSynthesisUtterance(message);
+      u.rate = 1.05;
+      u.pitch = 1.1;
+      const v = speechSynthesis.getVoices().find((v) => /^en/i.test(v.lang));
+      if (v) u.voice = v;
+      speechSynthesis.speak(u);
+      return;
+    } catch (err) { /* fall through to the beep */ }
+  }
+  beep();
+}
+
+function beep() {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  try {
+    const t = ctx.currentTime;
+    for (let i = 0; i < 3; i++) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const start = t + i * 0.28;
+      osc.type = 'square';
+      osc.frequency.value = i % 2 ? 880 : 660;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.25, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.24);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.26);
+    }
+  } catch (err) { /* audio unavailable */ }
+}
+
+/* ============================================================
+ * Camera + start/stop
+ * ============================================================ */
+
+async function startWatching() {
+  setMsg('Requesting camera access...');
+
+  // Open the preview popup synchronously, inside the click gesture — an
+  // async window.open() gets killed by the popup blocker. It stays empty
+  // until the stream is attached below.
+  const wantPreview = state.preview && state.cameraOn;
+  if (wantPreview) openPreviewWindow();
+
+  // Unlock audio inside the click gesture — browsers block sound until the
+  // page has seen one user interaction.
+  ensureAudio();
+
+  if (state.cameraOn) {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
+      if (wantPreview) attachPreviewToWindow();
+    } catch (err) {
+      closePreviewWindow();
+      setMsg('Camera access denied. Allow camera permission in the browser, or turn Camera OFF in settings.');
+      return;
+    }
+  }
+
+  if (faceDetector === null && objectDetector === null) {
+    await loadModels();
+  }
+
+  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
+
+  state.running = true;
+  state.suspiciousSince = null;
+  state.distracted = false;
+  state.wasDistracted = false;
+  visionTimer = setInterval(visionTick, 1000 / VISION_FPS);
+  detectorTimer = setInterval(detectorTick, TICK_MS);
+  $('btn-start').classList.add('hidden');
+  $('btn-toggle').classList.remove('hidden');
+  $('btn-toggle').textContent = 'Pause';
+  setMsg(null);
+  updateUI();
+}
+
+function stopWatching() {
+  state.running = false;
+  clearInterval(visionTimer);
+  clearInterval(detectorTimer);
+  visionTimer = detectorTimer = null;
+  if ('speechSynthesis' in window) {
+    try { speechSynthesis.cancel(); } catch (err) { /* ignore */ }
+  }
+  if (stream) {
+    stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+  }
+  video.srcObject = null;
+  closePreviewWindow();
+  state.suspiciousSince = null;
+  state.distracted = false;
+  state.wasDistracted = false;
+  state.warnCount = 0;
+  state.phoneSeen = false;
+  state.lastPhoneScore = 0;
+  state.phoneSince = null;
+  state.testBanner = 0;
+  state.phoneBox = null;
+  state.faceBox = null;
+  state.initBox = null;
+  phoneTrack = null;
+  phoneTrackMisses = 0;
+  initCand = null;
+  initStreak = 0;
+  initMisses = 0;
+  $('btn-start').classList.remove('hidden');
+  $('btn-toggle').classList.add('hidden');
+  updateUI();
+}
+
+/* ============================================================
+ * Camera preview popup — a small separate window
+ * ============================================================ */
+
+const PREVIEW_POPUP_HTML =
+  '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+  '<title>Focus Guardian — Camera</title>' +
+  '<style>html,body{margin:0;height:100%;background:#0f1115;color:#e6e8ee;' +
+  'font:14px "Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column;' +
+  'align-items:center;justify-content:center;gap:10px}' +
+  '#stage{position:relative;width:100%;max-width:520px;aspect-ratio:4/3;' +
+  'background:#000;border-radius:8px;overflow:hidden}' +
+  '#stage video{width:100%;height:100%;object-fit:fill;display:block}' +
+  '#stage canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}' +
+  'p{margin:0;opacity:.6}</style></head>' +
+  '<body><div id="stage"><video id="cam" autoplay muted playsinline></video>' +
+  '<canvas id="ov"></canvas></div>' +
+  '<p>Focus Guardian — camera preview</p></body></html>';
+
+function openPreviewWindow() {
+  if (previewWin && !previewWin.closed) return previewWin;
+  previewWin = null;
+  try {
+    previewWin = window.open('', 'focusGuardianPreview',
+      'popup=yes,width=580,height=540,resizable=yes');
+  } catch (err) {
+    previewWin = null;
+  }
+  if (previewWin) {
+    try {
+      previewWin.document.open();
+      previewWin.document.write(PREVIEW_POPUP_HTML);
+      previewWin.document.close();
+      previewWin.focus();
+    } catch (err) {
+      previewWin = null;
+    }
+  }
+  return previewWin;
+}
+
+function attachPreviewToWindow() {
+  if (!previewWin || previewWin.closed || !stream) return false;
+  try {
+    const v = previewWin.document.getElementById('cam');
+    if (!v) return false;
+    v.srcObject = stream;
+    v.play().catch(() => {});
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function closePreviewWindow() {
+  if (previewWin && !previewWin.closed) {
+    try { previewWin.close(); } catch (err) { /* already gone */ }
+  }
+  previewWin = null;
+}
+
+/* ============================================================
+ * Detection overlay — draws the face/phone boxes on the preview
+ * ============================================================ */
+
+function drawOverlays() {
+  if (!video.videoWidth) return;
+  drawOnCanvas($('preview-ov'), video);
+  if (previewWin && !previewWin.closed) {
+    const v = previewWin.document.getElementById('cam');
+    const ov = previewWin.document.getElementById('ov');
+    if (v && ov && v.videoWidth) drawOnCanvas(ov, v);
+  }
+}
+
+function drawOnCanvas(canvas, v) {
+  if (!canvas) return;
+  const cw = canvas.clientWidth;
+  const ch = canvas.clientHeight;
+  if (!cw || !ch) return;
+  const dpr = canvas.ownerDocument.defaultView.devicePixelRatio || 1;
+  canvas.width = Math.round(cw * dpr);
+  canvas.height = Math.round(ch * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.lineWidth = Math.max(2, Math.round(cw / 120));
+  ctx.font = Math.round(cw / 30) + 'px sans-serif';
+  ctx.textBaseline = 'top';
+  const drawBox = (box, color, label, dashed) => {
+    if (!box) return;
+    // Boxes are normalized 0-1; the canvas exactly covers the displayed
+    // video, so multiply straight through.
+    const x = box.x * canvas.width, y = box.y * canvas.height;
+    const w = box.w * canvas.width, h = box.h * canvas.height;
+    ctx.strokeStyle = color;
+    ctx.setLineDash(dashed ? [6, 4] : []);
+    ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
+    if (label) {
+      ctx.fillStyle = color;
+      ctx.fillText(label, x, y - ctx.lineWidth >= 0 ? y - ctx.lineWidth : y + h);
+    }
+  };
+  drawBox(state.faceBox, 'rgba(46,160,67,0.95)', 'face');
+  drawBox(state.initBox, 'rgba(210,153,34,0.6)',
+    state.initBox && state.initBox.score != null ? 'phone? ' + state.initBox.score.toFixed(2) : 'phone?', true);
+  if (state.phoneBox) {
+    drawBox(state.phoneBox,
+      state.phoneSeen ? 'rgba(210,153,34,0.95)' : 'rgba(210,153,34,0.5)',
+      'phone ' + (state.lastPhoneScore > 0 ? state.lastPhoneScore.toFixed(2) : ''));
+  }
+}
+
+function toggleWatching() {
+  if (state.running) stopWatching();
+  else startWatching();
+}
+
+/* ============================================================
+ * Settings
+ * ============================================================ */
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
+  } catch (err) { /* defaults */ }
+  return { ...DEFAULTS };
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      cameraOn: state.cameraOn,
+      detectionDelay: state.detectionDelay,
+      cooldown: state.cooldown,
+      phoneSensitivity: state.phoneSensitivity,
+      alertSound: state.alertSound,
+      preview: state.preview,
+    }));
+  } catch (err) { /* storage unavailable */ }
+}
+
+function openPanel() {
+  $('set-camera').value = state.cameraOn ? 'on' : 'off';
+  $('set-delay').value = state.detectionDelay;
+  $('set-delay-val').textContent = state.detectionDelay;
+  $('set-cooldown').value = state.cooldown;
+  $('set-cooldown-val').textContent = state.cooldown;
+  $('set-phone').value = state.phoneSensitivity;
+  $('set-sound').value = state.alertSound;
+  $('set-preview').checked = state.preview;
+  $('panel').classList.remove('hidden');
+}
+
+function closePanel() {
+  $('panel').classList.add('hidden');
+}
+
+function applySettings() {
+  state.cameraOn = $('set-camera').value === 'on';
+  state.detectionDelay = parseInt($('set-delay').value, 10);
+  state.cooldown = parseInt($('set-cooldown').value, 10);
+  state.phoneSensitivity = $('set-phone').value;
+  state.alertSound = $('set-sound').value;
+  state.preview = $('set-preview').checked;
+  saveSettings();
+  if (state.running) {
+    // Restart watching so camera on/off + preview apply cleanly.
+    stopWatching();
+    startWatching();
+  }
+  updateUI();
+}
+
+/* ============================================================
+ * UI
+ * ============================================================ */
+
+function setMsg(text) {
+  const el = $('msg');
+  el.textContent = text || '';
+  el.classList.toggle('hidden', !text);
+}
+
+function updateUI() {
+  const paused = !state.running;
+  const testActive = !!state.testBanner && performance.now() < state.testBanner;
+  const status = $('status');
+
+  if (paused) {
+    status.textContent = '⏸ Paused';
+    status.className = 'status paused';
+  } else if (state.distracted || testActive) {
+    const el = (performance.now() - (state.suspiciousSince || state.lastWarn)) / 1000;
+    status.textContent = '⚠ DISTRACTION DETECTED (' + fmtSec(el) + ')';
+    status.className = 'status bad';
+  } else if (state.suspiciousSince !== null) {
+    const left = Math.max(0, Math.ceil(
+      (state.suspiciousSince + state.detectionDelay * 1000 - performance.now()) / 1000));
+    status.textContent = left > 0 ? '● Watching… warn in ' + left + 's' : '● Watching…';
+    status.className = 'status susp';
+  } else {
+    status.textContent = '● Watching';
+    status.className = 'status ok';
+  }
+
+  $('warn').classList.toggle('hidden', !(state.distracted || testActive));
+
+  // Live trigger-condition readout — the only thing a warning needs now is
+  // the phone being tracked.
+  const conds = $('conds');
+  if (state.running) {
+    const items = [['phone', state.phoneSeen]];
+    conds.innerHTML = items.map(([k, v]) =>
+      '<span class="' + (v ? 'ok' : 'no') + '">' + (v ? '✓' : '✗') + ' ' + k + '</span>'
+    ).join(' ');
+    conds.classList.remove('hidden');
+  } else {
+    conds.classList.add('hidden');
+  }
+
+  if (!('Notification' in window)) {
+    $('row-notify').textContent = 'N/A';
+  } else {
+    $('row-notify').textContent =
+      Notification.permission === 'granted' ? 'ON'
+      : Notification.permission === 'denied' ? 'BLOCKED'
+      : 'Ask';
+  }
+
+  if (paused) {
+    $('row-camera').textContent = state.cameraOn ? 'PAUSED' : 'OFF';
+  } else if (!state.cameraOn) {
+    $('row-camera').textContent = 'OFF';
+  } else if (video.videoWidth) {
+    $('row-camera').textContent = 'ON';
+  } else {
+    $('row-camera').textContent = 'UNAVAILABLE';
+  }
+
+  $('row-keyboard').textContent =
+    (performance.now() - state.lastKeyboard) / 1000 < ACTIVE_IF_IDLE_LESS_THAN ? 'Active' : 'Idle';
+  $('row-mouse').textContent =
+    (performance.now() - state.lastMouse) / 1000 < ACTIVE_IF_IDLE_LESS_THAN ? 'Active' : 'Idle';
+  $('row-working').textContent = state.running
+    ? (idleSeconds() < 8 ? 'Yes' : 'No') : '—';
+
+  const phoneScore = state.lastPhoneScore > 0 ? ' · ' + state.lastPhoneScore.toFixed(2) : '';
+  $('row-phone').textContent =
+    state.phoneSeen ? 'YES' + phoneScore
+    : (state.phoneSupported ? 'NO' + phoneScore : 'N/A');
+  $('row-phonetime').textContent =
+    state.running && state.phoneSeen && state.phoneSince
+      ? fmtSec((performance.now() - state.phoneSince) / 1000) : '—';
+  $('row-distraction').textContent = state.distracted ? '⚠ YES' : 'No';
+
+  // When the popup is alive it owns the preview; the inline video (the
+  // detection source) stays hidden. If the popup was blocked or the user
+  // closed it, fall back to the inline preview.
+  const previewInPopup = !!(previewWin && !previewWin.closed);
+  const previewVisible = state.preview && state.running && state.cameraOn &&
+    video.videoWidth && !previewInPopup;
+  $('preview-wrap').classList.toggle('hidden', !previewVisible);
+}
+
+/* ============================================================
+ * Init
+ * ============================================================ */
+
+$('btn-start').addEventListener('click', startWatching);
+$('btn-toggle').addEventListener('click', toggleWatching);
+$('btn-settings').addEventListener('click', () => {
+  if ($('panel').classList.contains('hidden')) openPanel();
+  else closePanel();
+});
+$('set-save').addEventListener('click', () => { applySettings(); closePanel(); });
+$('set-cancel').addEventListener('click', closePanel);
+$('set-test').addEventListener('click', () => {
+  // Fire the full alert pipeline right now so you can verify sound,
+  // notification permission, and the banner actually work.
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
+  state.testBanner = performance.now() + 3000; // keep the banner visible ~3 s
+  notify(randomMessage());
+  updateUI();
+});
+$('set-delay').addEventListener('input', () => {
+  $('set-delay-val').textContent = $('set-delay').value;
+});
+$('set-cooldown').addEventListener('input', () => {
+  $('set-cooldown-val').textContent = $('set-cooldown').value;
+});
+
+updateUI();

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Focus Guardian</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="card">
+    <h1>FOCUS GUARDIAN</h1>
+    <div id="status" class="status ok">● Watching</div>
+    <div id="conds" class="conds hidden"></div>
+
+    <div id="warn" class="warn hidden">⚠ DISTRACTION DETECTED<br>PUT THE PHONE DOWN.</div>
+
+    <div id="preview-wrap" class="vidwrap hidden">
+      <video id="preview" autoplay muted playsinline></video>
+      <canvas id="preview-ov"></canvas>
+    </div>
+
+    <ul class="rows">
+      <li><span>Camera</span><b id="row-camera">—</b></li>
+      <li><span>Keyboard</span><b id="row-keyboard">—</b></li>
+      <li><span>Mouse</span><b id="row-mouse">—</b></li>
+      <li><span>Working</span><b id="row-working">—</b></li>
+      <li><span>Phone</span><b id="row-phone">—</b></li>
+      <li><span>Phone time</span><b id="row-phonetime">—</b></li>
+      <li><span>Notifications</span><b id="row-notify">—</b></li>
+      <li><span>Distraction</span><b id="row-distraction">No</b></li>
+    </ul>
+
+    <div class="controls">
+      <button id="btn-start" class="primary">Start watching</button>
+      <button id="btn-toggle" class="hidden">Pause</button>
+      <button id="btn-settings">Settings</button>
+    </div>
+
+    <div id="panel" class="panel hidden">
+      <label>Camera
+        <select id="set-camera">
+          <option value="on">ON</option>
+          <option value="off">OFF</option>
+        </select>
+      </label>
+      <label>Detection delay <b id="set-delay-val">7</b> s
+        <input type="range" id="set-delay" min="2" max="30" step="1" value="7">
+      </label>
+      <label>Notification cooldown <b id="set-cooldown-val">60</b> s
+        <input type="range" id="set-cooldown" min="30" max="300" step="5" value="60">
+      </label>
+      <label>Phone sensitivity
+        <select id="set-phone">
+          <option value="Low">Low</option>
+          <option value="Medium" selected>Medium</option>
+          <option value="High">High</option>
+        </select>
+      </label>
+      <label>Alert sound
+        <select id="set-sound">
+          <option value="voice" selected>Voice + beep</option>
+          <option value="beep">Beep only</option>
+          <option value="off">Off</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="set-preview"> Show camera preview</label>
+      <div class="panel-btns">
+        <button id="set-save" class="primary">Save</button>
+        <button id="set-cancel">Cancel</button>
+        <button id="set-test">Test alert</button>
+      </div>
+    </div>
+
+    <p id="msg" class="msg hidden"></p>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
