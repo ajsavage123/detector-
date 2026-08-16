@@ -27,16 +27,6 @@ const MESSAGES_STRONG = [
   'You have been ignoring this. PHONE DOWN.',
 ];
 
-// headDownRatio: how far the nose must drop below the eye line before the
-//   head counts as "looking down" (lower = more sensitive). A frontal face
-//   is ~0.55-0.65; a head pitched down pushes it above ~0.7.
-// idleSeconds: how long keyboard/mouse must be quiet before it counts.
-const STRICTNESS = {
-  Low:    { headDownRatio: 0.78, idleSeconds: 12 },
-  Medium: { headDownRatio: 0.70, idleSeconds: 10 },
-  High:   { headDownRatio: 0.64, idleSeconds: 8 },
-};
-
 const DEFAULTS = {
   cameraOn: true,          // Camera: ON/OFF
   detectionDelay: 7,       // Detection delay: 5-30 s
@@ -56,20 +46,41 @@ const ACTIVE_IF_IDLE_LESS_THAN = 3;   // input shown as "Active" under this (s)
 // The tracked box is drawn on the camera preview, following the phone.
 //   enter: confidence bar needed to START a track (needs 2 stable frames)
 //   exit:  a track dies after PHONE_RELEASE_FRAMES frames with no nearby hit
-// Sensitivity sets the MINIMUM score a phone-class detection needs to be
-// considered at all. Locking is decided by location stability, not score:
-// if the phone box stays put for a few frames, it's a phone. (The tiny
-// model scores real phones as low as 0.05-0.15, so a score bar alone would
-// never lock.)
+// Sensitivity sets TWO bars for phone-class detections:
+//   floor — minimum score to be "considered" at all: kept in the candidate
+//           pool (so an ALREADY-locked phone keeps tracking at low scores,
+//           e.g. half-hidden).
+//   lock  — minimum score a candidate needs to START a brand-new track.
+// Locking is location stability PLUS this higher score bar: the model flings
+// low-confidence "cell phone" labels at all sorts of other objects (books,
+// remotes, cups, hands), so a weak label must NOT be able to begin a track no
+// matter how still it sits. A real phone on the accurate lite2 model scores
+// well above the lock bar. (The old design locked on score-less stability
+// alone, which is why random objects got flagged as phones.)
 const PHONE_SENSITIVITY = {
-  Low:    { floor: 0.12 },   // require a fairly confident phone
-  Medium: { floor: 0.06 },   // balanced (default)
-  High:   { floor: 0.05 },   // lock on the weakest stable hint
+  Low:    { floor: 0.12, lock: 0.35, lockSquare: 0.50 },
+  Medium: { floor: 0.06, lock: 0.18, lockSquare: 0.35 },
+  High:   { floor: 0.05, lock: 0.10, lockSquare: 0.25 },
 };
 const PHONE_CONFIRM_FRAMES = 3;   // location-stable candidate frames to lock (~0.5 s)
 const PHONE_RELEASE_FRAMES = 6;   // frames a track survives without a nearby hit (~1 s)
 const PHONE_MAX_MOVE = 0.30;      // max normalized jump between frames while tracking
 const PHONE_SHOW_MIN = 0.05;      // phone-class detections below this are ignored entirely
+// STARTING a track is score + shape + stability, where shape only raises the
+// bar instead of rejecting outright:
+//   clearly portrait/landscape box (display aspect < 0.70 or > 1.50) locks
+//     at the low `lock` bar;
+//   near-square box (0.70-1.50) — a hand gripping a phone covers half of it
+//     and makes the box square-ish, but chargers, cups and faces sit in this
+//     band too — locks only at the higher `lockSquare` bar.
+// The score bar alone is a weak signal (a half-hidden real phone scores
+// low), so the bars are kept low enough that a real phone in hand clears
+// them; weak "cell phone" labels on faces/noses/random objects never do.
+// Oversized close-up boxes are excluded entirely. Once a track is locked it
+// ignores shape, so a phone held at an angle stays tracked.
+const PHONE_LOCK_ASPECT_MIN = 0.70;   // display w/h below = portrait-ish
+const PHONE_LOCK_ASPECT_MAX = 1.50;   // display w/h above = landscape-ish
+const PHONE_LOCK_AREA_MAX = 0.40;     // exclude giant (close-up) boxes
 
 const MEDIAPIPE_VERSION = '0.10.14';
 const VISION_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MEDIAPIPE_VERSION;
@@ -95,13 +106,11 @@ const state = {
   faceSupported: false,   // MediaPipe face detector loaded
   phoneSupported: false,  // object detector loaded
   facePresent: false,
-  headDown: false,
   phoneSeen: false,       // "phone in view" — true while a phone box is tracked
   lastPhoneScore: 0,      // best phone-class score this frame (for the UI)
   phoneSince: null,       // timestamp when the phone was first tracked (for the timer)
   faceBox: null,          // normalized face box (drawn on the preview)
   phoneBox: null,         // normalized tracked phone box (drawn on the preview)
-  initBox: null,          // live phone candidate box (dashed, while deciding)
 
   suspiciousSince: null,
   lastWarn: Number.NEGATIVE_INFINITY,  // so the very first warning always fires
@@ -116,6 +125,7 @@ let stream = null;
 let visionTimer = null;
 let detectorTimer = null;
 let previewWin = null;      // small popup window showing the camera feed
+let starting = false;       // re-entrancy guard for startWatching (async)
 let phoneTrack = null;      // normalized {x,y,w,h} of the tracked phone box
 let phoneTrackMisses = 0;   // consecutive frames without a nearby match
 let initCand = null;        // last strong candidate (while starting a track)
@@ -221,7 +231,6 @@ function visionTick() {
   state.lastPhoneScore = 0;
 
   let facePresent = false;
-  let headDown = false;
   state.faceBox = null;
   if (faceDetector) {
     try {
@@ -238,8 +247,6 @@ function visionTick() {
             h: det.boundingBox.height / video.videoHeight,
           };
         }
-        const strict = STRICTNESS[state.strictness] || STRICTNESS.Medium;
-        headDown = headDownRatio(det.keypoints) >= strict.headDownRatio;
       }
     } catch (err) { /* skip frame */ }
   }
@@ -248,10 +255,10 @@ function visionTick() {
   // everything the model labels is checked across ALL of its categories
   // because a real phone is often the 2nd/3rd hypothesis (e.g. below "book").
   // cands = candidates strong enough to track (>= sensitivity floor);
-  // liveCand = the best phone detection at all (for the dashed "phone?" box).
+  // lockCands = confident + phone-shaped candidates (can START a track).
   const sens = PHONE_SENSITIVITY[state.phoneSensitivity] || PHONE_SENSITIVITY.Medium;
-  const cands = [];
-  let liveCand = null;
+  const cands = [];      // floor-level candidates (track continuation)
+  const lockCands = [];  // confident + phone-shaped candidates (can START a track)
   if (objectDetector) {
     try {
       const res = objectDetector.detectForVideo(video, ts);
@@ -277,8 +284,17 @@ function visionTick() {
             cx: nx + nw / 2, cy: ny + nh / 2,
             score: phoneCat.score,
           };
-          if (!liveCand || phoneCat.score > liveCand.score) liveCand = cand;
           if (phoneCat.score >= sens.floor) cands.push(cand);
+          // Boxes are normalized per axis (x by width, y by height), so a
+          // square object becomes "portrait" in normalized coords — undo that
+          // with the video's pixel aspect before judging shape.
+          const dispAspect = (cand.w / cand.h) * (video.videoWidth / video.videoHeight);
+          const nearSquare = dispAspect >= PHONE_LOCK_ASPECT_MIN &&
+                             dispAspect <= PHONE_LOCK_ASPECT_MAX;
+          const bar = nearSquare ? sens.lockSquare : sens.lock;
+          if (phoneCat.score >= bar && cand.w * cand.h < PHONE_LOCK_AREA_MAX) {
+            lockCands.push(cand);
+          }
         }
       }
     } catch (err) { /* skip frame */ }
@@ -315,14 +331,16 @@ function visionTick() {
       }
     }
   } else {
-    // No track yet: lock after a few LOCATION-STABLE candidate frames. The
-    // score bar is deliberately out of the equation — if the box stays put
-    // for ~0.5 s it's a phone. A hand flashing through the frame moves too
-    // much frame to frame to ever satisfy this, so it still can't lock.
+    // No track yet: a NEW track may only start from a CONFIDENT, phone-shaped
+    // candidate (lockCands) that also stays location-stable for a few frames.
+    // Weak "cell phone" labels — which the model throws at books, remotes,
+    // hands, whatever — can't begin a track no matter how still they sit.
+    // (Once locked, the track survives on the lower floor, so a half-hidden
+    // real phone keeps counting.)
     if (initCand) {
       const scx = initCand.x + initCand.w / 2;
       const scy = initCand.y + initCand.h / 2;
-      const near = cands
+      const near = lockCands
         .filter((c) => Math.hypot(c.cx - scx, c.cy - scy) <= PHONE_MAX_MOVE)
         .sort((a, b) => b.score - a.score)[0];
       if (near) {
@@ -337,8 +355,8 @@ function visionTick() {
           initMisses = 0;
         }
       }
-    } else if (cands.length) {
-      const best = cands.slice().sort((a, b) => b.score - a.score)[0];
+    } else if (lockCands.length) {
+      const best = lockCands.slice().sort((a, b) => b.score - a.score)[0];
       initCand = { x: best.x, y: best.y, w: best.w, h: best.h };
       initStreak = 1;
       initMisses = 0;
@@ -360,31 +378,8 @@ function visionTick() {
   if (state.phoneSeen && state.phoneSince === null) state.phoneSince = performance.now();
   if (!state.phoneSeen) state.phoneSince = null;
 
-  // ALWAYS surface the model's best live phone candidate as the dashed
-  // "phone?" box — even below the sensitivity floor. If the detector emits
-  // anything phone-like at all, you SEE it on the preview (the solid box
-  // only appears once the track locks).
-  state.initBox = (!phoneTrack && liveCand)
-    ? { x: liveCand.x, y: liveCand.y, w: liveCand.w, h: liveCand.h, score: liveCand.score } : null;
-
   state.facePresent = facePresent;
-  state.headDown = headDown;
   drawOverlays();
-}
-
-function headDownRatio(keypoints) {
-  if (!keypoints || keypoints.length < 4) return 0;
-  // 0 right eye, 1 left eye, 2 nose tip, 3 mouth center (normalized 0-1)
-  const eyeY = (keypoints[0].y + keypoints[1].y) / 2;
-  const eyeX = (keypoints[0].x + keypoints[1].x) / 2;
-  const nose = keypoints[2];
-  const mouth = keypoints[3];
-  const eyeToMouth = mouth.y - eyeY;
-  if (eyeToMouth <= 1e-6) return 0;
-  const ratio = (nose.y - eyeY) / eyeToMouth;
-  const eyeWidth = Math.abs(keypoints[1].x - keypoints[0].x);
-  const sideways = eyeWidth > 1e-6 && Math.abs(nose.x - eyeX) > 0.5 * eyeWidth;
-  return sideways ? 0 : ratio;
 }
 
 /* ============================================================
@@ -395,9 +390,12 @@ function detectorTick() {
   if (!state.running) return;
   const now = performance.now();
 
-  // A warning fires whenever the phone is being held (tracked) — no face /
-  // head-down requirement. While the phone STAYS held, warnings keep coming
-  // back with escalating, dynamic messages until you put it down.
+  // A warning fires when a phone is being held (tracked) — the tracked box
+  // only exists after a CONFIDENT, phone-shaped detection held still for a
+  // few frames, so weak "cell phone" labels (on faces, noses, hands,
+  // chargers, cups) never trigger anything. While the phone STAYS held,
+  // warnings keep coming back with escalating, dynamic messages until you
+  // put it down.
   const holding = state.phoneSupported && state.phoneSeen;
 
   if (!holding) {
@@ -487,6 +485,9 @@ function ensureAudio() {
 function playAlert(message) {
   const mode = state.alertSound || 'voice';
   if (mode === 'off') return;
+  // "Voice + beep": speak AND beep together (the old code returned after
+  // speak(), so the beep never fired in voice mode). If speech is missing or
+  // throws, the beep below still covers the alert.
   if (mode === 'voice' && 'speechSynthesis' in window) {
     try {
       speechSynthesis.cancel(); // don't stack warnings
@@ -496,8 +497,7 @@ function playAlert(message) {
       const v = speechSynthesis.getVoices().find((v) => /^en/i.test(v.lang));
       if (v) u.voice = v;
       speechSynthesis.speak(u);
-      return;
-    } catch (err) { /* fall through to the beep */ }
+    } catch (err) { /* beep below still fires */ }
   }
   beep();
 }
@@ -528,53 +528,65 @@ function beep() {
  * ============================================================ */
 
 async function startWatching() {
-  setMsg('Requesting camera access...');
+  // startWatching is async (camera prompt + model download) and the Start
+  // button stays visible until it finishes, so a second click (or a settings
+  // Save mid-load) must not start a second run: two streams and two timer
+  // loops would fight, and the first camera stream would never be stopped.
+  if (starting || state.running) return;
+  starting = true;
+  try {
+    setMsg('Requesting camera access...');
 
-  // Open the preview popup synchronously, inside the click gesture — an
-  // async window.open() gets killed by the popup blocker. It stays empty
-  // until the stream is attached below.
-  const wantPreview = state.preview && state.cameraOn;
-  if (wantPreview) openPreviewWindow();
+    // Open the preview popup synchronously, inside the click gesture — an
+    // async window.open() gets killed by the popup blocker. It stays empty
+    // until the stream is attached below.
+    const wantPreview = state.preview && state.cameraOn;
+    if (wantPreview) openPreviewWindow();
 
-  // Unlock audio inside the click gesture — browsers block sound until the
-  // page has seen one user interaction.
-  ensureAudio();
+    // Unlock audio inside the click gesture — browsers block sound until the
+    // page has seen one user interaction.
+    ensureAudio();
 
-  if (state.cameraOn) {
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-        audio: false,
-      });
-      video.srcObject = stream;
-      await video.play();
-      if (wantPreview) attachPreviewToWindow();
-    } catch (err) {
-      closePreviewWindow();
-      setMsg('Camera access denied. Allow camera permission in the browser, or turn Camera OFF in settings.');
-      return;
+    if (state.cameraOn) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+          audio: false,
+        });
+        video.srcObject = stream;
+        await video.play();
+        if (wantPreview) attachPreviewToWindow();
+      } catch (err) {
+        closePreviewWindow();
+        setMsg('Camera access denied. Allow camera permission in the browser, or turn Camera OFF in settings.');
+        return;
+      }
     }
-  }
 
-  if (faceDetector === null && objectDetector === null) {
-    await loadModels();
-  }
+    if (faceDetector === null && objectDetector === null) {
+      await loadModels();
+    }
 
-  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
-    Notification.requestPermission().catch(() => {});
-  }
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
 
-  state.running = true;
-  state.suspiciousSince = null;
-  state.distracted = false;
-  state.wasDistracted = false;
-  visionTimer = setInterval(visionTick, 1000 / VISION_FPS);
-  detectorTimer = setInterval(detectorTick, TICK_MS);
-  $('btn-start').classList.add('hidden');
-  $('btn-toggle').classList.remove('hidden');
-  $('btn-toggle').textContent = 'Pause';
-  setMsg(null);
-  updateUI();
+    state.running = true;
+    state.suspiciousSince = null;
+    state.distracted = false;
+    state.wasDistracted = false;
+    visionTimer = setInterval(visionTick, 1000 / VISION_FPS);
+    detectorTimer = setInterval(detectorTick, TICK_MS);
+    $('btn-start').classList.add('hidden');
+    $('btn-toggle').classList.remove('hidden');
+    $('btn-toggle').textContent = 'Pause';
+    // Keep a model-load failure message visible; only clear it when both
+    // detectors are actually usable.
+    if (state.faceSupported && state.phoneSupported) setMsg(null);
+    updateUI();
+  } finally {
+    starting = false;
+  }
 }
 
 function stopWatching() {
@@ -601,7 +613,6 @@ function stopWatching() {
   state.testBanner = 0;
   state.phoneBox = null;
   state.faceBox = null;
-  state.initBox = null;
   phoneTrack = null;
   phoneTrackMisses = 0;
   initCand = null;
@@ -716,8 +727,6 @@ function drawOnCanvas(canvas, v) {
     }
   };
   drawBox(state.faceBox, 'rgba(46,160,67,0.95)', 'face');
-  drawBox(state.initBox, 'rgba(210,153,34,0.6)',
-    state.initBox && state.initBox.score != null ? 'phone? ' + state.initBox.score.toFixed(2) : 'phone?', true);
   if (state.phoneBox) {
     drawBox(state.phoneBox,
       state.phoneSeen ? 'rgba(210,153,34,0.95)' : 'rgba(210,153,34,0.5)',
@@ -806,12 +815,26 @@ function updateUI() {
     status.textContent = '⏸ Paused';
     status.className = 'status paused';
   } else if (state.distracted || testActive) {
-    const el = (performance.now() - (state.suspiciousSince || state.lastWarn)) / 1000;
+    // A test alert isn't a real distraction: show 0:00 instead of the time
+    // since the last real warning (which may be stale or -Infinity and would
+    // render as "Infinity:NaN").
+    const el = state.distracted
+      ? (performance.now() - (state.suspiciousSince || state.lastWarn)) / 1000
+      : 0;
     status.textContent = '⚠ DISTRACTION DETECTED (' + fmtSec(el) + ')';
     status.className = 'status bad';
   } else if (state.suspiciousSince !== null) {
-    const left = Math.max(0, Math.ceil(
-      (state.suspiciousSince + state.detectionDelay * 1000 - performance.now()) / 1000));
+    // The warning fires at the LATER of: the hold-duration delay, and the
+    // cooldown/escalation gap since the last warning — mirror detectorTick
+    // so the countdown matches when the alert actually lands.
+    const working = idleSeconds() < 8;
+    const gap = state.warnCount === 0
+      ? state.cooldown * 1000
+      : escalateInterval(state.warnCount, working) * 1000;
+    const warnAt = Math.max(
+      state.suspiciousSince + state.detectionDelay * 1000,
+      state.lastWarn + gap);
+    const left = Math.max(0, Math.ceil((warnAt - performance.now()) / 1000));
     status.textContent = left > 0 ? '● Watching… warn in ' + left + 's' : '● Watching…';
     status.className = 'status susp';
   } else {
