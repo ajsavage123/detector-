@@ -93,9 +93,15 @@ const ACTIVE_IF_IDLE_LESS_THAN = 3;   // input shown as "Active" under this (s)
 // well above the lock bar. (The old design locked on score-less stability
 // alone, which is why random objects got flagged as phones.)
 const PHONE_SENSITIVITY = {
-  Low:    { floor: 0.12, lock: 0.22, lockSquare: 0.40 },
-  Medium: { floor: 0.06, lock: 0.12, lockSquare: 0.25 },
-  High:   { floor: 0.05, lock: 0.06, lockSquare: 0.15 },
+  // The lock bars are deliberately LOW because the verification gates
+  // (activeness + reference-photo match) catch false locks afterwards — the
+  // bars only need to separate "something phone-ish and stable" from noise.
+  // A real phone in hand — even half-covered or held at an angle — scores
+  // well above these; only weak "cell phone" labels on faces/random objects
+  // fall below, and even those must hold still for ~0.5 s to lock.
+  Low:    { floor: 0.12, lock: 0.15, lockSquare: 0.28 },
+  Medium: { floor: 0.06, lock: 0.08, lockSquare: 0.16 },
+  High:   { floor: 0.05, lock: 0.05, lockSquare: 0.10 },
 };
 const PHONE_CONFIRM_FRAMES = 3;   // location-stable candidate frames to lock (~0.5 s)
 const PHONE_RELEASE_FRAMES = 6;   // frames a track survives without a nearby hit (~1 s)
@@ -193,6 +199,13 @@ let initStreak = 0;         // consecutive location-stable candidates
 let initMisses = 0;         // frames with no nearby candidate during init
 
 const $ = (id) => document.getElementById(id);
+// Null-safe listener: if the element is missing (e.g. a cached old index.html
+// being served alongside a newer app.js), skip instead of crashing the whole
+// script at init — detection must keep working regardless.
+function on(id, evt, fn) {
+  const el = $(id);
+  if (el) el.addEventListener(evt, fn);
+}
 const video = $('preview');
 
 /* ============================================================
@@ -352,9 +365,14 @@ function visionTick() {
           const nearSquare = dispAspect >= PHONE_LOCK_ASPECT_MIN &&
                              dispAspect <= PHONE_LOCK_ASPECT_MAX;
           const bar = nearSquare ? sens.lockSquare : sens.lock;
-          // A near-square box overlapping the user's face is almost certainly
-          // the face being mislabeled as a phone — never let it start a track.
-          const onFace = nearSquare && state.faceBox && boxesOverlap(cand, state.faceBox);
+          // A near-square box that is MOSTLY CONTAINED inside the face box is
+          // almost certainly the face being mislabeled as a phone — block it.
+          // But a phone held up near your face merely OVERLAPS the face box
+          // (it extends outside the head silhouette), so it must still be
+          // allowed to lock — blocking on overlap alone made phones held at
+          // face level never register.
+          const onFace = nearSquare && state.faceBox &&
+            overlapFraction(cand, state.faceBox) > 0.75;
           if (phoneCat.score >= bar && !onFace && cand.w * cand.h < PHONE_LOCK_AREA_MAX) {
             lockCands.push(cand);
           }
@@ -448,9 +466,14 @@ function visionTick() {
   drawOverlays();
 }
 
-function boxesOverlap(a, b) {
-  return a.x < b.x + b.w && a.x + a.w > b.x &&
-         a.y < b.y + b.h && a.y + a.h > b.y;
+// Fraction of box `a` that lies inside box `b` (0-1). Used to tell a face
+// fragment (mostly inside the face box — a mislabel) from a real phone held
+// in front of the face (overlaps, but extends outside the head silhouette).
+function overlapFraction(a, b) {
+  const ix = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+  const iy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+  if (ix <= 0 || iy <= 0) return 0;
+  return (ix * iy) / (a.w * a.h);
 }
 
 /* ============================================================
@@ -649,11 +672,13 @@ function clearRefPhoto() {
 }
 
 function refreshRefUI() {
+  const s = $('ref-status');
+  const t = $('ref-thumb');
+  if (!s || !t) return;   // stale cached HTML: the verification UI just isn't there
   const has = !!state.refPhoto;
-  $('ref-status').textContent = has
+  s.textContent = has
     ? (state.refPhoto.at ? 'Set (' + new Date(state.refPhoto.at).toLocaleDateString() + ')' : 'Set')
     : 'Not set';
-  const t = $('ref-thumb');
   if (has) {
     t.src = state.refPhoto.url;
     t.classList.remove('hidden');
@@ -1243,41 +1268,46 @@ function updateUI() {
     conds.classList.add('hidden');
   }
 
-  // Verify row: what verification #2 concluded about the tracked object.
-  const vv = state.verifyVerdict;
-  if (!state.running) {
-    $('row-verify').textContent = '—';
-  } else if (idleSeconds() < 8 && state.phoneSeen) {
-    $('row-verify').textContent = 'Working — no alert';
-  } else if (vv === 'matched') {
-    $('row-verify').textContent = '✅ your phone' +
-      (state.verifySim != null ? ' (' + Math.round(state.verifySim * 100) + '%)' : '');
-  } else if (vv === 'mismatch') {
-    $('row-verify').textContent = '❌ other object' +
-      (state.verifySim != null ? ' (' + Math.round(state.verifySim * 100) + '%)' : '');
-  } else if (vv === 'noref') {
-    $('row-verify').textContent = 'No reference photo';
-  } else if (state.phoneSeen) {
-    $('row-verify').textContent = 'Checking…';
-  } else {
-    $('row-verify').textContent = '—';
-  }
-
-  // Cross-check strip: the stored reference photo next to what was actually
-  // captured, with the match % — the "provided the picture" evidence.
+  // Verify row + cross-check strip: what verification #2 concluded about the
+  // tracked object. Guarded so a stale cached index.html (missing these
+  // elements) can never break updateUI — detection and warnings still run.
+  const rowVerify = $('row-verify');
   const strip = $('verify-strip');
-  if (state.running && state.phoneSeen && state.verifyThumb) {
-    $('verify-ref').src = state.refPhoto ? state.refPhoto.url : '';
-    $('verify-ref').classList.toggle('hidden', !state.refPhoto);
-    $('verify-cap').src = state.verifyThumb;
-    $('verify-sim').textContent = state.verifySim != null
-      ? Math.round(state.verifySim * 100) + '% match — ' +
-        (state.verifyVerdict === 'matched' ? 'your phone' :
-         state.verifyVerdict === 'mismatch' ? 'NOT your phone' : 'no reference')
-      : '';
-    strip.classList.remove('hidden');
-  } else {
-    strip.classList.add('hidden');
+  if (rowVerify && strip) {
+    const vv = state.verifyVerdict;
+    if (!state.running) {
+      rowVerify.textContent = '—';
+    } else if (idleSeconds() < 8 && state.phoneSeen) {
+      rowVerify.textContent = 'Working — no alert';
+    } else if (vv === 'matched') {
+      rowVerify.textContent = '✅ your phone' +
+        (state.verifySim != null ? ' (' + Math.round(state.verifySim * 100) + '%)' : '');
+    } else if (vv === 'mismatch') {
+      rowVerify.textContent = '❌ other object' +
+        (state.verifySim != null ? ' (' + Math.round(state.verifySim * 100) + '%)' : '');
+    } else if (vv === 'noref') {
+      rowVerify.textContent = 'No reference photo';
+    } else if (state.phoneSeen) {
+      rowVerify.textContent = 'Checking…';
+    } else {
+      rowVerify.textContent = '—';
+    }
+    if (state.running && state.phoneSeen && state.verifyThumb) {
+      const refEl = $('verify-ref'), capEl = $('verify-cap'), simEl = $('verify-sim');
+      if (refEl && capEl && simEl) {
+        refEl.src = state.refPhoto ? state.refPhoto.url : '';
+        refEl.classList.toggle('hidden', !state.refPhoto);
+        capEl.src = state.verifyThumb;
+        simEl.textContent = state.verifySim != null
+          ? Math.round(state.verifySim * 100) + '% match — ' +
+            (state.verifyVerdict === 'matched' ? 'your phone' :
+             state.verifyVerdict === 'mismatch' ? 'NOT your phone' : 'no reference')
+          : '';
+      }
+      strip.classList.remove('hidden');
+    } else {
+      strip.classList.add('hidden');
+    }
   }
 
   if (!('Notification' in window)) {
@@ -1336,8 +1366,8 @@ $('btn-settings').addEventListener('click', () => {
 });
 $('set-save').addEventListener('click', () => { applySettings(); closePanel(); });
 $('set-cancel').addEventListener('click', closePanel);
-$('set-capture').addEventListener('click', captureRefPhoto);
-$('set-ref-clear').addEventListener('click', clearRefPhoto);
+on('set-capture', 'click', captureRefPhoto);
+on('set-ref-clear', 'click', clearRefPhoto);
 $('set-test').addEventListener('click', () => {
   // Fire the full alert pipeline right now so you can verify sound,
   // notification permission, and the banner actually work.
