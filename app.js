@@ -5,26 +5,61 @@
  * Messages are the notification texts (one is picked at random).
  * ============================================================ */
 
+// Four escalation tiers. Warnings cycle through them in SEQUENCE — each
+// alert plays the NEXT message in the current tier (never a repeat), and the
+// ladder moves up as you keep ignoring it: MESSAGES → FIRM → STRONG → FINAL.
+// The FINAL tier loops back to its start when exhausted, so while you keep
+// holding the phone, alerts keep coming, one after another, always different.
 const MESSAGES = [
   'HEY. PUT THE PHONE DOWN.',
-  'Focus.',
+  'Focus. The phone can wait.',
   'Come back to work.',
-  "You're distracted.",
-  'Put the phone away.',
+  "You're distracted — drop the phone.",
+  'Put the phone away and get back to it.',
+  'That phone is stealing your time. Set it down.',
+  'Eyes back on the task. Phone away.',
+  'You picked it up again. Put it down.',
+  'This is your focus window. Protect it.',
+  "Don't let one scroll turn into twenty minutes.",
 ];
 
-// Escalation: keep holding the phone and the alerts get firmer.
 const MESSAGES_FIRM = [
-  'Still holding the phone. Put it down.',
-  'You are STILL on your phone.',
-  'Phone down. Back to work.',
-  "That's enough scrolling.",
+  'Still holding the phone. PUT IT DOWN.',
+  'You are STILL on your phone. Stop.',
+  'Phone down. Back to work. NOW.',
+  "That's enough scrolling — close it.",
+  'You are ignoring me. The phone stays down.',
+  'Every second on that phone is work you are not doing.',
+  'Enough. Put the phone away this minute.',
+  'Your focus is slipping. Drop the phone NOW.',
+  'The phone is not helping you. It is stealing from you.',
+  'Stop scrolling and get back to the task.',
 ];
+
 const MESSAGES_STRONG = [
   'STOP. PHONE DOWN. NOW.',
   'PUT THE PHONE DOWN IMMEDIATELY.',
   'ENOUGH. Put the phone away and work.',
   'You have been ignoring this. PHONE DOWN.',
+  'THIS IS YOUR WARNING. Drop it now.',
+  'You are failing your own goal. Put the phone down.',
+  'THE PHONE GOES DOWN. RIGHT NOW.',
+  'That scroll is a trap. Let go of the phone NOW.',
+  'WAKE UP. You are on your phone. Put it down.',
+  'No more gentle warnings after this. PHONE. DOWN.',
+];
+
+// The final tier: short, brutal, and it LOOPS — once you're here the alerts
+// keep rotating through these until the phone leaves your hand.
+const MESSAGES_FINAL = [
+  'PHONE DOWN. PHONE DOWN. PHONE DOWN.',
+  'PUT IT DOWN. WALK AWAY. WORK.',
+  'YOU ARE STILL ON YOUR PHONE. THIS IS NOT WORKING.',
+  'STOP. RIGHT NOW. THE PHONE LEAVES YOUR HAND.',
+  'YOU CAME HERE TO WORK. THE PHONE IS IN THE WAY. DROP IT.',
+  'ENOUGH IS ENOUGH. PHONE DOWN OR THIS KEEPS HAPPENING.',
+  'LAST WARNING. PUT. THE. PHONE. DOWN.',
+  "Don't let the phone win. You are stronger than it. DROP IT NOW.",
 ];
 
 const DEFAULTS = {
@@ -58,9 +93,9 @@ const ACTIVE_IF_IDLE_LESS_THAN = 3;   // input shown as "Active" under this (s)
 // well above the lock bar. (The old design locked on score-less stability
 // alone, which is why random objects got flagged as phones.)
 const PHONE_SENSITIVITY = {
-  Low:    { floor: 0.12, lock: 0.35, lockSquare: 0.50 },
-  Medium: { floor: 0.06, lock: 0.18, lockSquare: 0.35 },
-  High:   { floor: 0.05, lock: 0.10, lockSquare: 0.25 },
+  Low:    { floor: 0.12, lock: 0.22, lockSquare: 0.40 },
+  Medium: { floor: 0.06, lock: 0.12, lockSquare: 0.25 },
+  High:   { floor: 0.05, lock: 0.06, lockSquare: 0.15 },
 };
 const PHONE_CONFIRM_FRAMES = 3;   // location-stable candidate frames to lock (~0.5 s)
 const PHONE_RELEASE_FRAMES = 6;   // frames a track survives without a nearby hit (~1 s)
@@ -69,10 +104,12 @@ const PHONE_SHOW_MIN = 0.05;      // phone-class detections below this are ignor
 // STARTING a track is score + shape + stability, where shape only raises the
 // bar instead of rejecting outright:
 //   clearly portrait/landscape box (display aspect < 0.70 or > 1.50) locks
-//     at the low `lock` bar;
+//     at the low `lock` bar — a phone half out of frame or half hidden still
+//     shows a portrait/landscape sliver, so it locks even at modest scores;
 //   near-square box (0.70-1.50) — a hand gripping a phone covers half of it
 //     and makes the box square-ish, but chargers, cups and faces sit in this
-//     band too — locks only at the higher `lockSquare` bar.
+//     band too — locks only at the higher `lockSquare` bar, and NOT if the
+//     box overlaps the user's face (a face being mislabeled as a phone).
 // The score bar alone is a weak signal (a half-hidden real phone scores
 // low), so the bars are kept low enough that a real phone in hand clears
 // them; weak "cell phone" labels on faces/noses/random objects never do.
@@ -90,6 +127,22 @@ const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_detecto
 const OBJ_MODEL = 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float16/1/efficientdet_lite2.tflite';
 const OBJ_MODEL_LITE0 = 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
 const SETTINGS_KEY = 'focus-guardian-settings';
+
+// Phone verification — two gates, both fully client-side (no backend):
+//   1) ACTIVENESS — if you are actively typing / moving the mouse while a
+//      phone-shaped object is tracked, it is not treated as a distraction.
+//   2) OBJECT MATCH — a tiny fingerprint (dHash + color histogram) of the
+//      tracked object is compared with a stored photo of YOUR actual phone
+//      (taken once in Settings). A match warns; anything else (chargers,
+//      cups, books) stays silent. The picture is taken at most once per
+//      hold episode (one 32x32 downscale, ~1 ms) — never per frame — and
+//      the reference photo persists in localStorage across restarts.
+const REF_PHOTO_KEY = 'focus-guardian-ref-phone';
+const VERIFY_MATCH_MIN = 0.50;    // combined similarity (0-1) to call it "your phone"
+const VERIFY_AWAY_GRACE = 3000;   // track-flicker grace: re-lock within 3 s keeps the verdict
+const SIG_SIZE = 64;              // fingerprint downscale size (tiny & fast)
+const SIG_GRID = 16;              // 16x16 block grid → 480-bit texture hash
+const COLOR_BINS = 6;             // 6x6x6 color histogram = 216 bins
 
 /* ============================================================
  * State
@@ -117,6 +170,13 @@ const state = {
   warnCount: 0,             // warnings fired during the current hold episode
   distracted: false,
   wasDistracted: false,
+
+  refPhoto: loadRefPhoto(), // stored photo of the real phone {url, sig, at}
+  verifyVerdict: null,      // 'matched' | 'mismatch' | 'noref' | null
+  verifySim: null,          // last similarity score (0-1)
+  verifyThumb: null,        // data URL of the last verification capture
+  verifyAway: null,         // when the phone left the frame (for the flicker grace)
+  verifyAttempts: 0,        // mismatch retries on the current hold (blur guard)
 };
 
 let faceDetector = null;
@@ -292,7 +352,10 @@ function visionTick() {
           const nearSquare = dispAspect >= PHONE_LOCK_ASPECT_MIN &&
                              dispAspect <= PHONE_LOCK_ASPECT_MAX;
           const bar = nearSquare ? sens.lockSquare : sens.lock;
-          if (phoneCat.score >= bar && cand.w * cand.h < PHONE_LOCK_AREA_MAX) {
+          // A near-square box overlapping the user's face is almost certainly
+          // the face being mislabeled as a phone — never let it start a track.
+          const onFace = nearSquare && state.faceBox && boxesOverlap(cand, state.faceBox);
+          if (phoneCat.score >= bar && !onFace && cand.w * cand.h < PHONE_LOCK_AREA_MAX) {
             lockCands.push(cand);
           }
         }
@@ -348,8 +411,11 @@ function visionTick() {
         initCand = { x: near.x, y: near.y, w: near.w, h: near.h };
         initMisses = 0;
       } else {
+        // A half-visible phone flickers in and out of the model's output, so
+        // tolerate a few missed frames before giving up on the candidate
+        // (2 was too strict — the streak died before it could ever lock).
         initMisses++;
-        if (initMisses >= 2) {
+        if (initMisses >= 4) {
           initCand = null;
           initStreak = 0;
           initMisses = 0;
@@ -382,6 +448,220 @@ function visionTick() {
   drawOverlays();
 }
 
+function boxesOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x &&
+         a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/* ============================================================
+ * Phone verification — fingerprint + match (all client-side)
+ * ============================================================ */
+
+function loadRefPhoto() {
+  try {
+    const raw = localStorage.getItem(REF_PHOTO_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    if (!p || !p.url || !p.sig) return null;
+    return { url: p.url, sig: p.sig, at: p.at || null };
+  } catch (err) { return null; }
+}
+
+// Draw the given video region into a tiny SIG_SIZE x SIG_SIZE canvas and
+// return its ImageData — the cheap fingerprint source for both the reference
+// photo and every live verification.
+function captureImageData(sx, sy, sw, sh) {
+  if (!video.videoWidth) return null;
+  const cv = document.createElement('canvas');
+  cv.width = SIG_SIZE;
+  cv.height = SIG_SIZE;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  try {
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, SIG_SIZE, SIG_SIZE);
+    return ctx.getImageData(0, 0, SIG_SIZE, SIG_SIZE);
+  } catch (err) { return null; }
+}
+
+// 480-bit texture hash (16x16 block averages, horizontal + vertical
+// adjacent-pixel comparisons) plus a 216-bin RGB color histogram. The fine
+// grid captures screen texture/glare — what separates a phone from a plain
+// phone-shaped charger — while the histogram carries color identity. Robust
+// to scale and lighting, fast enough to run per hold without any backend.
+function imageSignature(img) {
+  if (!img) return null;
+  const d = img.data;
+  const g = new Array(SIG_SIZE * SIG_SIZE);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    g[p] = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+  }
+  const cell = SIG_SIZE / SIG_GRID;   // pixels per block edge
+  const n = SIG_GRID * SIG_GRID;
+  const avg = new Array(n);
+  for (let by = 0; by < SIG_GRID; by++) {
+    for (let bx = 0; bx < SIG_GRID; bx++) {
+      let s = 0;
+      for (let y = 0; y < cell; y++) {
+        const row = (by * cell + y) * SIG_SIZE + bx * cell;
+        for (let x = 0; x < cell; x++) s += g[row + x];
+      }
+      avg[by * SIG_GRID + bx] = s / (cell * cell);
+    }
+  }
+  let bits = '';
+  for (let y = 0; y < SIG_GRID; y++) {
+    for (let x = 0; x < SIG_GRID - 1; x++) {
+      bits += avg[y * SIG_GRID + x] >= avg[y * SIG_GRID + x + 1] ? '1' : '0';
+    }
+  }
+  for (let y = 0; y < SIG_GRID - 1; y++) {
+    for (let x = 0; x < SIG_GRID; x++) {
+      bits += avg[y * SIG_GRID + x] >= avg[(y + 1) * SIG_GRID + x] ? '1' : '0';
+    }
+  }
+  const hash = bits.match(/.{1,4}/g).map((b) => parseInt(b, 2).toString(16)).join('');
+  // floor(channel * bins / 256) — works for any bin count (Math.log2 is
+  // only exact for powers of two, so no shifts here).
+  const hist = new Array(COLOR_BINS * COLOR_BINS * COLOR_BINS).fill(0);
+  let total = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = (d[i] * COLOR_BINS) >> 8;
+    const gg = (d[i + 1] * COLOR_BINS) >> 8;
+    const b = (d[i + 2] * COLOR_BINS) >> 8;
+    hist[(r * COLOR_BINS + gg) * COLOR_BINS + b]++;
+    total++;
+  }
+  return { hash, hist: hist.map((c) => c / (total || 1)) };
+}
+
+function hamming(a, b) {
+  let dist = 0;
+  for (let i = 0; i < a.length; i++) {
+    let x = parseInt(a[i], 16) ^ parseInt(b[i], 16);
+    while (x) { dist += x & 1; x >>= 1; }
+  }
+  return dist;
+}
+
+function signatureSimilarity(s1, s2) {
+  if (!s1 || !s2) return 0;
+  const nBits = (SIG_GRID * (SIG_GRID - 1)) * 2;
+  const hashSim = 1 - hamming(s1.hash, s2.hash) / nBits;
+  let inter = 0;
+  for (let i = 0; i < s1.hist.length; i++) inter += Math.min(s1.hist[i], s2.hist[i]);
+  // Texture (hash) dominates — it carries the screen/glare pattern that
+  // separates a phone from a phone-shaped object; color is the tiebreaker.
+  return 0.65 * hashSim + 0.35 * inter;
+}
+
+// Draw the given video region as a small JPEG data URL (for the UI's
+// "provided the picture" cross-check strip).
+function makeThumb(sx, sy, sw, sh) {
+  if (!video.videoWidth) return null;
+  const scale = Math.min(1, 160 / sw);
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(sw * scale));
+  cv.height = Math.max(1, Math.round(sh * scale));
+  const ctx = cv.getContext('2d');
+  try {
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+    return cv.toDataURL('image/jpeg', 0.7);
+  } catch (err) { return null; }
+}
+
+// The object match: capture the tracked box, fingerprint it, and compare it
+// with the stored reference photo. Returns 'matched' | 'mismatch' | 'noref'.
+// (One tiny 64x64 downscale per call; a blurry frame is handled by the
+// retry logic in detectorTick, not here.)
+function verifyHeldObject() {
+  if (!state.refPhoto) return 'noref';
+  const cw = video.videoWidth, ch = video.videoHeight;
+  if (!cw) return 'noref';
+  const box = state.phoneBox;
+  let sx, sy, sw, sh;
+  if (box && box.w > 0.02 && box.h > 0.02) {
+    sx = box.x * cw; sy = box.y * ch; sw = box.w * cw; sh = box.h * ch;
+  } else {
+    sw = cw * 0.6; sh = ch * 0.6; sx = (cw - sw) / 2; sy = (ch - sh) / 2;
+  }
+  const img = captureImageData(sx, sy, sw, sh);
+  if (!img) return 'noref';
+  const live = imageSignature(img);
+  state.verifySim = signatureSimilarity(state.refPhoto.sig, live);
+  state.verifyThumb = makeThumb(sx, sy, sw, sh);
+  return state.verifySim >= VERIFY_MATCH_MIN ? 'matched' : 'mismatch';
+}
+
+// Settings → "Capture my phone": store a reference photo of the real phone
+// (preferring the tracked phone box, else the frame center) so every future
+// detection can be cross-checked against it. Stored in localStorage — never
+// removed, never sent anywhere.
+function captureRefPhoto() {
+  if (!video.videoWidth) {
+    setMsg('Start watching first so the camera is live, then capture your phone.');
+    return;
+  }
+  const cw = video.videoWidth, ch = video.videoHeight;
+  let sx = 0, sy = 0, sw = cw, sh = ch;
+  if (state.phoneBox && state.phoneBox.w > 0.02 && state.phoneBox.h > 0.02) {
+    sx = state.phoneBox.x * cw; sy = state.phoneBox.y * ch;
+    sw = state.phoneBox.w * cw; sh = state.phoneBox.h * ch;
+  }
+  const img = captureImageData(sx, sy, sw, sh);
+  if (!img) { setMsg('Could not read the camera frame — try again.'); return; }
+  const sig = imageSignature(img);
+  const scale = Math.min(1, 480 / sw);
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(sw * scale));
+  cv.height = Math.max(1, Math.round(sh * scale));
+  const ctx = cv.getContext('2d');
+  try {
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+  } catch (err) { setMsg('Could not read the camera frame — try again.'); return; }
+  const ref = { url: cv.toDataURL('image/jpeg', 0.72), sig, at: new Date().toISOString() };
+  try {
+    localStorage.setItem(REF_PHOTO_KEY, JSON.stringify(ref));
+  } catch (err) {
+    setMsg('Could not store the photo (browser storage full?). Try again.');
+    return;
+  }
+  state.refPhoto = ref;
+  state.verifyVerdict = null;
+  state.verifySim = null;
+  state.verifyThumb = null;
+  state.verifyAway = null;
+  state.verifyAttempts = 0;
+  refreshRefUI();
+  updateUI();
+  setMsg('Phone reference photo saved — every detection is now cross-checked against it.');
+}
+
+function clearRefPhoto() {
+  try { localStorage.removeItem(REF_PHOTO_KEY); } catch (err) { /* ignore */ }
+  state.refPhoto = null;
+  state.verifyVerdict = null;
+  state.verifySim = null;
+  state.verifyThumb = null;
+  state.verifyAway = null;
+  state.verifyAttempts = 0;
+  refreshRefUI();
+  updateUI();
+  setMsg('Reference photo cleared. Detections fall back to shape + score only.');
+}
+
+function refreshRefUI() {
+  const has = !!state.refPhoto;
+  $('ref-status').textContent = has
+    ? (state.refPhoto.at ? 'Set (' + new Date(state.refPhoto.at).toLocaleDateString() + ')' : 'Set')
+    : 'Not set';
+  const t = $('ref-thumb');
+  if (has) {
+    t.src = state.refPhoto.url;
+    t.classList.remove('hidden');
+  } else {
+    t.classList.add('hidden');
+  }
+}
+
 /* ============================================================
  * Distraction rule + notification
  * ============================================================ */
@@ -399,9 +679,69 @@ function detectorTick() {
   const holding = state.phoneSupported && state.phoneSeen;
 
   if (!holding) {
+    // Note when the phone left the frame: a track that comes back within a
+    // couple of seconds is just flicker and keeps its verdict; a real new
+    // pick-up re-verifies (still only one capture per hold episode).
+    if (state.verifyVerdict !== null && state.verifyAway === null) state.verifyAway = now;
     state.suspiciousSince = null;
     state.distracted = false;
     state.warnCount = 0;      // escalation restarts per hold episode
+    resetMessageLadder();     // ...and so does the message sequence
+    updateUI();
+    return;
+  }
+
+  if (state.verifyAway !== null) {
+    if (now - state.verifyAway > VERIFY_AWAY_GRACE) {
+      state.verifyVerdict = null;   // a real new hold → re-verify
+      state.verifySim = null;
+      state.verifyThumb = null;
+      state.verifyAttempts = 0;
+    }
+    state.verifyAway = null;
+  }
+
+  const working = idleSeconds() < 8;
+
+  // VERIFICATION 1 — activeness. If you're actively typing / moving the
+  // mouse, the phone-shaped object in your hand is not a distraction:
+  // no object check, no alert, no escalation.
+  if (working) {
+    state.suspiciousSince = null;
+    state.distracted = false;
+    state.warnCount = 0;
+    resetMessageLadder();
+    updateUI();
+    return;
+  }
+
+  // VERIFICATION 2 — object match. Fingerprint the tracked object and
+  // compare it with the stored photo of your actual phone. A single blurry
+  // or motion-smeared frame must not decide the verdict, so a borderline
+  // mismatch retries on the next ticks (up to 3 attempts, ~0.6 s) before
+  // concluding "not your phone". 'noref' (no reference photo stored) falls
+  // through to the old shape+score behavior so the app keeps working until
+  // you calibrate.
+  if (state.verifyVerdict === null) {
+    const res = verifyHeldObject();
+    if (res === 'noref') {
+      state.verifyVerdict = 'noref';
+    } else if (res === 'matched') {
+      state.verifyVerdict = 'matched';
+    } else {
+      state.verifyAttempts = (state.verifyAttempts || 0) + 1;
+      if (state.verifyAttempts >= 3) state.verifyVerdict = 'mismatch';
+      // else: keep the verdict pending and re-check next tick
+    }
+  }
+
+  if (state.verifyVerdict === 'mismatch') {
+    // The object in view is NOT your phone (charger, cup, book, ...) —
+    // not a distraction. Stay silent while it is held.
+    state.suspiciousSince = null;
+    state.distracted = false;
+    state.warnCount = 0;
+    resetMessageLadder();
     updateUI();
     return;
   }
@@ -411,16 +751,14 @@ function detectorTick() {
 
   if (state.distracted) {
     // First warning of an episode waits the cooldown (quick pick-up/put-down
-    // doesn't spam). While still held, repeats come faster and faster, and
-    // are gentler if you're actively working (typing / moving the mouse).
-    const working = idleSeconds() < 8;
+    // doesn't spam). While still held, repeats come faster and faster.
     const gapNeeded = state.warnCount === 0
       ? state.cooldown * 1000
       : escalateInterval(state.warnCount, working) * 1000;
     if (now - state.lastWarn >= gapNeeded) {
       state.lastWarn = now;
       state.warnCount++;
-      notify(pickMessage(state.warnCount, working));
+      notify(pickMessage(state.warnCount, working), alertTier(state.warnCount));
     }
   }
 
@@ -434,16 +772,48 @@ function escalateInterval(warnCount, working) {
   return Math.max(8, base - warnCount * 2);
 }
 
+// Sequential message ladder. Each warning takes the NEXT message in the
+// current tier instead of a random pick, so consecutive alerts are always
+// different and always escalating. Moving up a tier restarts that tier's
+// sequence; the FINAL tier wraps around and keeps looping until the phone is
+// put down (which resets the whole ladder for the next episode).
+let msgLadder = null;    // tier currently being cycled
+let msgLadderIdx = 0;    // next message position in that tier
+
+function ladderTier(warnCount, working) {
+  if (working || warnCount <= 1) return MESSAGES;
+  if (warnCount <= 3) return MESSAGES_FIRM;
+  if (warnCount <= 6) return MESSAGES_STRONG;
+  return MESSAGES_FINAL;
+}
+
 function pickMessage(warnCount, working) {
-  let pool;
-  if (working || warnCount <= 1) pool = MESSAGES;
-  else if (warnCount <= 3) pool = MESSAGES_FIRM;
-  else pool = MESSAGES_STRONG;
-  return pool[Math.floor(Math.random() * pool.length)];
+  const tier = ladderTier(warnCount, working);
+  if (msgLadder !== tier) {
+    msgLadder = tier;        // fresh episode or moving up: start at message 0
+    msgLadderIdx = 0;
+  }
+  const message = tier[msgLadderIdx];
+  msgLadderIdx = (msgLadderIdx + 1) % tier.length;   // loop forever
+  return message;
+}
+
+function resetMessageLadder() {
+  msgLadder = null;
+  msgLadderIdx = 0;
 }
 
 function randomMessage() {
   return MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
+}
+
+// 0 = gentle tier, 3 = the looping final tier — drives both the message pool
+// and how harsh the sound gets.
+function alertTier(warnCount) {
+  if (warnCount <= 1) return 0;
+  if (warnCount <= 3) return 1;
+  if (warnCount <= 6) return 2;
+  return 3;
 }
 
 function fmtSec(sec) {
@@ -453,13 +823,14 @@ function fmtSec(sec) {
   return m + ':' + String(s).padStart(2, '0');
 }
 
-function notify(message) {
+function notify(message, tier) {
+  tier = tier || 0;
   if ('Notification' in window && Notification.permission === 'granted') {
     try {
       new Notification('FOCUS GUARDIAN', { body: message, tag: 'focus-guardian' });
     } catch (err) { /* banner below still shows */ }
   }
-  playAlert(message);
+  playAlert(message, tier);
   $('warn').textContent = '⚠ DISTRACTION DETECTED\n' + message;
   updateUI();
 }
@@ -482,43 +853,45 @@ function ensureAudio() {
   return audioCtx;
 }
 
-function playAlert(message) {
+function playAlert(message, tier) {
   const mode = state.alertSound || 'voice';
   if (mode === 'off') return;
-  // "Voice + beep": speak AND beep together (the old code returned after
-  // speak(), so the beep never fired in voice mode). If speech is missing or
-  // throws, the beep below still covers the alert.
+  // "Voice + beep": speak AND beep together. If speech is missing or throws,
+  // the beep below still covers the alert.
   if (mode === 'voice' && 'speechSynthesis' in window) {
     try {
       speechSynthesis.cancel(); // don't stack warnings
       const u = new SpeechSynthesisUtterance(message);
-      u.rate = 1.05;
-      u.pitch = 1.1;
+      u.rate = Math.max(0.8, 1.05 - tier * 0.06);   // slower = more emphatic
+      u.pitch = 1.1 + tier * 0.12;                   // sharper as it escalates
       const v = speechSynthesis.getVoices().find((v) => /^en/i.test(v.lang));
       if (v) u.voice = v;
       speechSynthesis.speak(u);
     } catch (err) { /* beep below still fires */ }
   }
-  beep();
+  beep(tier);
 }
 
-function beep() {
+function beep(tier) {
   const ctx = ensureAudio();
   if (!ctx) return;
   try {
     const t = ctx.currentTime;
-    for (let i = 0; i < 3; i++) {
+    const n = 3 + tier;                            // more bursts as it escalates
+    const gap = 0.24;
+    const dur = 0.20 + tier * 0.02;
+    for (let i = 0; i < n; i++) {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      const start = t + i * 0.28;
+      const start = t + i * gap;
       osc.type = 'square';
-      osc.frequency.value = i % 2 ? 880 : 660;
+      osc.frequency.value = (i % 2 ? 880 : 660) + tier * 110;   // rising pitch
       gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.25, start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.24);
+      gain.gain.exponentialRampToValueAtTime(0.28, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
       osc.connect(gain).connect(ctx.destination);
       osc.start(start);
-      osc.stop(start + 0.26);
+      osc.stop(start + dur + 0.02);
     }
   } catch (err) { /* audio unavailable */ }
 }
@@ -607,6 +980,12 @@ function stopWatching() {
   state.distracted = false;
   state.wasDistracted = false;
   state.warnCount = 0;
+  resetMessageLadder();
+  state.verifyVerdict = null;
+  state.verifySim = null;
+  state.verifyThumb = null;
+  state.verifyAway = null;
+  state.verifyAttempts = 0;
   state.phoneSeen = false;
   state.lastPhoneScore = 0;
   state.phoneSince = null;
@@ -773,6 +1152,7 @@ function openPanel() {
   $('set-phone').value = state.phoneSensitivity;
   $('set-sound').value = state.alertSound;
   $('set-preview').checked = state.preview;
+  refreshRefUI();
   $('panel').classList.remove('hidden');
 }
 
@@ -844,17 +1224,60 @@ function updateUI() {
 
   $('warn').classList.toggle('hidden', !(state.distracted || testActive));
 
-  // Live trigger-condition readout — the only thing a warning needs now is
-  // the phone being tracked.
+  // Live trigger-condition readout: what the verification pipeline needs
+  // before a warning can fire.
   const conds = $('conds');
   if (state.running) {
     const items = [['phone', state.phoneSeen]];
+    if (state.phoneSeen) {
+      if (idleSeconds() < 8) items.push(['working', true]);
+      else if (state.verifyVerdict === 'matched') items.push(['your phone', true]);
+      else if (state.verifyVerdict === 'mismatch') items.push(['not your phone', false]);
+      else if (state.verifyVerdict === 'noref') items.push(['no ref photo', false]);
+    }
     conds.innerHTML = items.map(([k, v]) =>
       '<span class="' + (v ? 'ok' : 'no') + '">' + (v ? '✓' : '✗') + ' ' + k + '</span>'
     ).join(' ');
     conds.classList.remove('hidden');
   } else {
     conds.classList.add('hidden');
+  }
+
+  // Verify row: what verification #2 concluded about the tracked object.
+  const vv = state.verifyVerdict;
+  if (!state.running) {
+    $('row-verify').textContent = '—';
+  } else if (idleSeconds() < 8 && state.phoneSeen) {
+    $('row-verify').textContent = 'Working — no alert';
+  } else if (vv === 'matched') {
+    $('row-verify').textContent = '✅ your phone' +
+      (state.verifySim != null ? ' (' + Math.round(state.verifySim * 100) + '%)' : '');
+  } else if (vv === 'mismatch') {
+    $('row-verify').textContent = '❌ other object' +
+      (state.verifySim != null ? ' (' + Math.round(state.verifySim * 100) + '%)' : '');
+  } else if (vv === 'noref') {
+    $('row-verify').textContent = 'No reference photo';
+  } else if (state.phoneSeen) {
+    $('row-verify').textContent = 'Checking…';
+  } else {
+    $('row-verify').textContent = '—';
+  }
+
+  // Cross-check strip: the stored reference photo next to what was actually
+  // captured, with the match % — the "provided the picture" evidence.
+  const strip = $('verify-strip');
+  if (state.running && state.phoneSeen && state.verifyThumb) {
+    $('verify-ref').src = state.refPhoto ? state.refPhoto.url : '';
+    $('verify-ref').classList.toggle('hidden', !state.refPhoto);
+    $('verify-cap').src = state.verifyThumb;
+    $('verify-sim').textContent = state.verifySim != null
+      ? Math.round(state.verifySim * 100) + '% match — ' +
+        (state.verifyVerdict === 'matched' ? 'your phone' :
+         state.verifyVerdict === 'mismatch' ? 'NOT your phone' : 'no reference')
+      : '';
+    strip.classList.remove('hidden');
+  } else {
+    strip.classList.add('hidden');
   }
 
   if (!('Notification' in window)) {
@@ -913,6 +1336,8 @@ $('btn-settings').addEventListener('click', () => {
 });
 $('set-save').addEventListener('click', () => { applySettings(); closePanel(); });
 $('set-cancel').addEventListener('click', closePanel);
+$('set-capture').addEventListener('click', captureRefPhoto);
+$('set-ref-clear').addEventListener('click', clearRefPhoto);
 $('set-test').addEventListener('click', () => {
   // Fire the full alert pipeline right now so you can verify sound,
   // notification permission, and the banner actually work.
@@ -920,7 +1345,7 @@ $('set-test').addEventListener('click', () => {
     Notification.requestPermission().catch(() => {});
   }
   state.testBanner = performance.now() + 3000; // keep the banner visible ~3 s
-  notify(randomMessage());
+  notify(randomMessage(), 0);   // normal intensity for a test
   updateUI();
 });
 $('set-delay').addEventListener('input', () => {
@@ -930,4 +1355,5 @@ $('set-cooldown').addEventListener('input', () => {
   $('set-cooldown-val').textContent = $('set-cooldown').value;
 });
 
+refreshRefUI();   // show the stored reference photo state at boot
 updateUI();

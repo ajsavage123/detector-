@@ -11,6 +11,12 @@
     <h1>FOCUS GUARDIAN</h1>
     <div id="status" class="status ok">● Watching</div>
     <div id="conds" class="conds hidden"></div>
+    <div id="verify-strip" class="verify-strip hidden">
+      <img id="verify-ref" class="vthumb hidden" alt="your phone (reference)">
+      <span>vs</span>
+      <img id="verify-cap" class="vthumb" alt="what was detected">
+      <b id="verify-sim"></b>
+    </div>
 
     <div id="warn" class="warn hidden">⚠ DISTRACTION DETECTED<br>PUT THE PHONE DOWN.</div>
 
@@ -26,6 +32,7 @@
       <li><span>Working</span><b id="row-working">—</b></li>
       <li><span>Phone</span><b id="row-phone">—</b></li>
       <li><span>Phone time</span><b id="row-phonetime">—</b></li>
+      <li><span>Verify</span><b id="row-verify">—</b></li>
       <li><span>Notifications</span><b id="row-notify">—</b></li>
       <li><span>Distraction</span><b id="row-distraction">No</b></li>
     </ul>
@@ -64,6 +71,21 @@
         </select>
       </label>
       <label class="check"><input type="checkbox" id="set-preview"> Show camera preview</label>
+      <div class="ref-box">
+        <div class="ref-head">
+          <b>Phone verification photo</b>
+          <span id="ref-status">Not set</span>
+        </div>
+        <div class="ref-row">
+          <img id="ref-thumb" class="vthumb hidden" alt="stored phone photo">
+          <button id="set-capture">📷 Capture my phone</button>
+          <button id="set-ref-clear">Clear</button>
+        </div>
+        <p class="ref-hint">Hold your real phone in your hand the way you normally would, wait for the amber
+          phone box to appear, then click <b>Capture my phone</b> (it crops the boxed phone). The app stores
+          this photo in your browser only — never removed, never uploaded — and cross-checks every detection
+          against it before warning.</p>
+      </div>
       <div class="panel-btns">
         <button id="set-save" class="primary">Save</button>
         <button id="set-cancel">Cancel</button>
