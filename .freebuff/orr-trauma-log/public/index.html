@@ -1,0 +1,1383 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ORR TRAUMA CENTER LOG SYSTEM</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons CDN -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts Inter & JetBrains Mono -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        medicalRed: {
+                            50: '#fef2f2',
+                            100: '#ffe1e1',
+                            600: '#dc2626',
+                            700: '#b91c1c',
+                            800: '#991b1b',
+                            900: '#7f1d1d',
+                            950: '#450a0a',
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Hide scrollbars everywhere — scrolling still works via wheel / touch / keyboard */
+        html, body, * {
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+        *::-webkit-scrollbar,
+        *::-webkit-scrollbar:horizontal {
+            display: none;
+            width: 0 !important;
+            height: 0 !important;
+            background: transparent;
+            border: none;
+        }
+        .drawer-slide-up {
+            transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        /* Narrative fields grow vertically as more text is typed */
+        textarea.grow-field {
+            resize: none;
+            overflow: hidden;
+            display: block;
+        }
+
+        /* ===== Mobile / touch friendliness (below lg — matches the mobile layout) ===== */
+        @media (max-width: 1023px) {
+            /* 16px form controls: stops iOS Safari's auto-zoom on focus, keeps text readable */
+            input, select, textarea {
+                font-size: 16px !important;
+            }
+            /* Floor the small field labels for readability on phones */
+            label {
+                font-size: 13px !important;
+            }
+            /* 44px minimum touch targets (WCAG 2.5.5) */
+            input, select, button, textarea {
+                min-height: 44px;
+            }
+            /* Keep fixed bottom bars clear of the iPhone home indicator */
+            .lg\:hidden.fixed.bottom-0 {
+                padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+            }
+            #previewDrawer > div:last-child {
+                padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
+            }
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-full flex flex-col font-sans pb-24 lg:pb-6 antialiased overflow-x-hidden">
+
+    <!-- Emergency Red Medical Header Bar -->
+    <header class="bg-gradient-to-r from-red-800 via-red-700 to-red-800 border-b border-red-900 sticky top-0 z-30 shadow-xl overflow-hidden">
+        <div class="max-w-7xl mx-auto px-3 py-2 flex items-center justify-between gap-2">
+            <!-- Medical Logo & Title -->
+            <div class="flex items-center space-x-2 min-w-0">
+                <div class="bg-white text-red-700 w-8 h-8 rounded-lg flex items-center justify-center font-black text-lg shadow-md shrink-0 ring-2 ring-red-300/30">
+                    <i class="fa-solid fa-truck-medical"></i>
+                </div>
+                <div class="min-w-0 truncate">
+                    <h1 class="font-extrabold text-xs sm:text-sm text-white tracking-wide uppercase truncate leading-tight flex items-center gap-1.5">
+                        <span>ORR TRAUMA CENTER LOG SYSTEM</span>
+                    </h1>
+                    <p class="text-[9px] sm:text-[10px] text-red-100/90 font-medium truncate">WhatsApp Bold & 31-Column TSV Generator</p>
+                </div>
+            </div>
+
+            <!-- Compact Actions -->
+            <div class="flex items-center space-x-1.5 shrink-0">
+                <button type="button" onclick="loadSampleData()" class="bg-red-950/80 hover:bg-red-900 text-red-100 border border-red-400/30 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition" title="Load Sample Incident Data for Testing">
+                    <i class="fa-solid fa-file-import text-amber-300"></i>
+                    <span class="hidden sm:inline">Load Sample</span>
+                </button>
+                <button type="button" onclick="openPreviewDrawer()" class="lg:hidden bg-red-950/80 hover:bg-red-950 text-white border border-red-400/40 px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition">
+                    <i class="fa-solid fa-eye text-red-200"></i>
+                    <span>Preview</span>
+                </button>
+                <button type="button" onclick="confirmResetForm()" class="bg-red-950/80 hover:bg-red-950 text-red-100 border border-red-400/30 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1 transition">
+                    <i class="fa-solid fa-rotate-right text-red-300"></i>
+                    <span class="hidden sm:inline">Reset</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content Container -->
+    <main class="max-w-7xl mx-auto px-3 sm:px-4 py-4 flex-1 w-full grid grid-cols-1 lg:grid-cols-12 gap-5">
+
+        <!-- Left Column: Input Form (7 Cols) -->
+        <div class="lg:col-span-7 space-y-4">
+            <form id="incidentForm" class="space-y-4" onsubmit="event.preventDefault();">
+
+                <!-- 1. Incident Category & Location -->
+                <div class="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-3.5 sm:p-4 shadow-xl space-y-3 backdrop-blur">
+                    <div class="flex items-center gap-2 border-b border-slate-700/80 pb-2">
+                        <div class="w-5 h-5 rounded bg-red-500/20 text-red-400 flex items-center justify-center text-xs">
+                            <i class="fa-solid fa-hospital"></i>
+                        </div>
+                        <h2 class="text-xs font-bold uppercase tracking-wider text-red-400">1. Incident Category & Location</h2>
+                    </div>
+
+                    <!-- Category Selector: RTA vs Medical Emergency -->
+                    <div class="bg-slate-900/90 p-2.5 rounded-xl border border-slate-700/80 space-y-2">
+                        <label class="block text-xs font-bold text-slate-300">Select Incident Category *</label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button type="button" id="btnCategoryRTA" onclick="setCategory('RTA')" class="py-2 px-3 rounded-xl text-xs font-bold border flex items-center justify-center gap-2 transition bg-red-600 text-white border-red-500 shadow-lg shadow-red-950/40">
+                                <i class="fa-solid fa-car-burst text-sm"></i>
+                                <span>RTA (Accident)</span>
+                            </button>
+                            <button type="button" id="btnCategoryMedical" onclick="setCategory('MEDICAL')" class="py-2 px-3 rounded-xl text-xs font-bold border flex items-center justify-center gap-2 transition bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200">
+                                <i class="fa-solid fa-heart-pulse text-sm"></i>
+                                <span>Medical Emergency</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Center Name *</label>
+                            <select id="centerName" onchange="resetUserEditFlag(); updatePreview();" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs font-semibold text-slate-100 focus:ring-2 focus:ring-red-500 outline-none transition">
+                                <option value="KOKAPET">KOKAPET</option>
+                                <option value="PATANCHERU">PATANCHERU</option>
+                                <option value="GHATKESAR">GHATKESAR</option>
+                                <option value="MEDCHAL">MEDCHAL</option>
+                                <option value="KOLLUR">KOLLUR</option>
+                                <option value="SULTANPUR">SULTANPUR</option>
+                                <option value="DUNDIGAL">DUNDIGAL</option>
+                                <option value="SHAMIRPET">SHAMIRPET</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Date *</label>
+                            <input type="date" id="incidentDate" onchange="resetUserEditFlag(); updatePreview();" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs font-semibold text-slate-100 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div class="sm:col-span-2">
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Pickup Location (exact point) *</label>
+                            <textarea id="pickupLocation" rows="1" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. LHS 1+600 Towards Kokapet to Neopolis" class="grow-field w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none"></textarea>
+                        </div>
+
+                        <!-- Collision Type Dropdown & Custom Details (RTA Only) -->
+                        <div id="rtaCollisionBox" class="sm:col-span-2 space-y-2">
+                            <label class="block text-xs font-semibold text-slate-300">RTA Collision Type *</label>
+                            <div class="relative">
+                                <select id="rtaCollisionType" onchange="onRtaSelectChange()" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 pl-8 text-xs font-medium text-slate-100 focus:ring-2 focus:ring-red-500 outline-none appearance-none">
+                                    <option value="Rear-End Collision">🚗💥🚗 Rear-End Collision</option>
+                                    <option value="Head-On Collision">🚘💥🚘 Head-On Collision</option>
+                                    <option value="Side Impact / Side Sweep Collision">🚗💥🚙 Side Impact / Side Sweep Collision</option>
+                                    <option value="Rollover Collision">🔄🚗 Rollover Collision</option>
+                                    <option value="Single Vehicle Collision">🚘💥🧱 Single Vehicle Collision (Hit Divider/Tree/Wall)</option>
+                                    <option value="Multiple Vehicle Accident">🚚💥🚗💥🚛 Multiple Vehicle Accident (Pileup)</option>
+                                    <option value="Pedestrian Knockdown">🏃💥🚗 Pedestrian Knockdown</option>
+                                    <option value="CUSTOM">✏️ Custom / Type Manually...</option>
+                                </select>
+                                <div class="absolute inset-y-0 left-2.5 flex items-center pointer-events-none text-red-400 text-xs">
+                                    <i class="fa-solid fa-car-burst"></i>
+                                </div>
+                                <div class="absolute inset-y-0 right-2.5 flex items-center pointer-events-none text-slate-400 text-xs">
+                                    <i class="fa-solid fa-chevron-down"></i>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-[11px] font-medium text-slate-400 mb-1">Mechanism of Injury *</label>
+                                <textarea id="mechanismDetails" rows="1" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. Car hit to cement container (Rear-End Collision)" class="grow-field w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none"></textarea>
+                            </div>
+                        </div>
+
+                        <!-- Medical Nature Box & Custom Details (Medical Only) -->
+                        <div id="medicalNatureBox" class="hidden sm:col-span-2 space-y-2">
+                            <label class="block text-xs font-semibold text-slate-300">Nature of Illness *</label>
+                            <div class="relative">
+                                <select id="medicalConditionSelect" onchange="onMedicalSelectChange()" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 pl-8 text-xs font-medium text-slate-100 focus:ring-2 focus:ring-red-500 outline-none appearance-none">
+                                    <option value="Shortness of breath / Difficulty in breathing">🫁 Shortness of breath / Difficulty in breathing</option>
+                                    <option value="Chest Pain / Suspected Cardiac Emergency">❤️ Chest Pain / Cardiac Distress</option>
+                                    <option value="Loss of Consciousness / Unconscious">🧠 Loss of Consciousness / Syncope</option>
+                                    <option value="Stroke / Hemiparesis / Paralysis">🧠 Stroke Symptoms / Facial Droop / Paralysis</option>
+                                    <option value="Trauma / Sudden Fall due to Dizziness">🦯 Trauma / Fall due to Dizziness</option>
+                                    <option value="High Fever / Seizures / Convulsions">🌡️ High Fever / Seizures / Fits</option>
+                                    <option value="Severe Abdominal Pain">🩺 Severe Abdominal Pain</option>
+                                    <option value="CUSTOM">✏️ Custom / Type Manually...</option>
+                                </select>
+                                <div class="absolute inset-y-0 left-2.5 flex items-center pointer-events-none text-red-400 text-xs">
+                                    <i class="fa-solid fa-notes-medical"></i>
+                                </div>
+                                <div class="absolute inset-y-0 right-2.5 flex items-center pointer-events-none text-slate-400 text-xs">
+                                    <i class="fa-solid fa-chevron-down"></i>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-[11px] font-medium text-slate-400 mb-1">Editable Nature of Illness Details *</label>
+                                <textarea id="medicalIllnessDetails" rows="1" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. Shortness of breath, severe chest discomfort" class="grow-field w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none"></textarea>
+                            </div>
+                        </div>
+
+                        <div id="accidentVehBox">
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Accident Vehicle Number</label>
+                            <input type="text" id="accidentVehicleNo" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. AP12G0900" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div id="callerInfoBox" class="space-y-2">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-300 mb-1">Caller Name *</label>
+                                <div class="relative">
+                                    <select id="callerPreset" onchange="onCallerSelectChange()" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 pl-8 text-xs font-medium text-slate-100 focus:ring-2 focus:ring-red-500 outline-none appearance-none">
+                                        <option value="Patrolling">Patrolling</option>
+                                        <option value="ORR Control Room">ORR Control Room</option>
+                                        <option value="CUSTOM">✏️ Custom / Type Manually...</option>
+                                    </select>
+                                    <div class="absolute inset-y-0 left-2.5 flex items-center pointer-events-none text-red-400 text-xs">
+                                        <i class="fa-solid fa-phone"></i>
+                                    </div>
+                                    <div class="absolute inset-y-0 right-2.5 flex items-center pointer-events-none text-slate-400 text-xs">
+                                        <i class="fa-solid fa-chevron-down"></i>
+                                    </div>
+                                </div>
+                                <input type="text" id="callerInfo" oninput="resetUserEditFlag(); updatePreview();" placeholder="Type custom caller name" class="hidden w-full mt-2 bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-300 mb-1">Caller Phone Number *</label>
+                                <input type="tel" id="callerPhone" inputmode="tel" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. Caller's number" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. Dynamic Patient / Victim Details -->
+                <div class="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-3.5 sm:p-4 shadow-xl space-y-3 backdrop-blur">
+                    <div class="flex items-center justify-between border-b border-slate-700/80 pb-2">
+                        <div class="flex items-center gap-2">
+                            <div class="w-5 h-5 rounded bg-red-500/20 text-red-400 flex items-center justify-center text-xs">
+                                <i class="fa-solid fa-user-injured"></i>
+                            </div>
+                            <h2 class="text-xs font-bold uppercase tracking-wider text-red-400">2. Victim / Patient Details</h2>
+                        </div>
+                        <button type="button" onclick="addVictimCard()" class="bg-red-600/30 hover:bg-red-600/40 text-red-200 border border-red-500/40 font-bold px-2.5 py-1 rounded-xl text-xs transition flex items-center gap-1">
+                            <i class="fa-solid fa-user-plus"></i> Add Patient
+                        </button>
+                    </div>
+
+                    <div id="victimsContainer" class="space-y-3">
+                        <!-- Dynamic Patient Cards inserted here -->
+                    </div>
+                </div>
+
+                <!-- 3. Medical Advice & Management -->
+                <div class="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-3.5 sm:p-4 shadow-xl space-y-3 backdrop-blur">
+                    <div class="flex items-center gap-2 border-b border-slate-700/80 pb-2">
+                        <div class="w-5 h-5 rounded bg-red-500/20 text-red-400 flex items-center justify-center text-xs">
+                            <i class="fa-solid fa-user-md"></i>
+                        </div>
+                        <h2 class="text-xs font-bold uppercase tracking-wider text-red-400">3. Medical Advice & Supervision</h2>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">ERCP Doctor Name *</label>
+                            <input type="text" id="ercpName" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. Dr. Tejasvi Sir" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Inform Manager Name *</label>
+                            <input type="text" id="managerName" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. Kishore Sir" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div class="sm:col-span-2">
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">WhatsApp Greeting *</label>
+                            <select id="greetingSelect" onchange="resetUserEditFlag(); updatePreview();" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs font-semibold text-slate-100 focus:ring-2 focus:ring-red-500 outline-none">
+                                <option value="GOOD MORNING SIR">GOOD MORNING SIR</option>
+                                <option value="GOOD AFTERNOON SIR">GOOD AFTERNOON SIR</option>
+                                <option value="GOOD EVENING SIR">GOOD EVENING SIR</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 4. Operational Timings -->
+                <div class="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-3.5 sm:p-4 shadow-xl space-y-3 backdrop-blur">
+                    <div class="flex items-center gap-2 border-b border-slate-700/80 pb-2">
+                        <div class="w-5 h-5 rounded bg-amber-500/20 text-amber-400 flex items-center justify-center text-xs">
+                            <i class="fa-solid fa-clock"></i>
+                        </div>
+                        <h2 class="text-xs font-bold uppercase tracking-wider text-amber-400">4. Operational Timings</h2>
+                    </div>
+
+                    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                        <div>
+                            <label class="block text-[10px] font-semibold text-slate-300 mb-1">Call Time *</label>
+                            <input type="time" id="callTime" oninput="resetUserEditFlag(); updatePreview();" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-1.5 text-xs font-semibold text-slate-100 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-[10px] font-semibold text-slate-300 mb-1">Start Time *</label>
+                            <input type="time" id="startTime" oninput="resetUserEditFlag(); updatePreview();" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-1.5 text-xs font-semibold text-slate-100 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-[10px] font-semibold text-slate-300 mb-1">Scene Reach *</label>
+                            <input type="time" id="sceneReach" oninput="resetUserEditFlag(); updatePreview();" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-1.5 text-xs font-semibold text-slate-100 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-[10px] font-semibold text-slate-300 mb-1">Scene Depart</label>
+                            <input type="time" id="sceneDeparture" oninput="resetUserEditFlag(); updatePreview();" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-1.5 text-xs font-semibold text-slate-100 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-[10px] font-semibold text-slate-300 mb-1">Hospital Reach</label>
+                            <input type="text" id="hospitalReach" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. 00:05 / Not applicable" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-1.5 text-xs font-semibold text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-[10px] font-semibold text-slate-300 mb-1">Handover Time</label>
+                            <input type="text" id="handoverTime" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. 00:30 / Not applicable" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-1.5 text-xs font-semibold text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div class="col-span-2 sm:col-span-1">
+                            <label class="block text-[10px] font-semibold text-slate-300 mb-1">Back To Base *</label>
+                            <input type="time" id="backToBase" oninput="resetUserEditFlag(); updatePreview();" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-1.5 text-xs font-semibold text-slate-100 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 5. Vehicle Logistics & Crew -->
+                <div class="bg-slate-800/80 rounded-2xl border border-slate-700/80 p-3.5 sm:p-4 shadow-xl space-y-3 backdrop-blur">
+                    <div class="flex items-center gap-2 border-b border-slate-700/80 pb-2">
+                        <div class="w-5 h-5 rounded bg-red-500/20 text-red-400 flex items-center justify-center text-xs">
+                            <i class="fa-solid fa-truck-medical"></i>
+                        </div>
+                        <h2 class="text-xs font-bold uppercase tracking-wider text-red-400">5. Vehicle & Crew Details</h2>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mb-1">
+                        <div class="sm:col-span-3">
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Ambulance Vehicle Number *</label>
+                            <input type="text" id="ambVehicleNo" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. TS 11 UC 9726" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Starting Odo *</label>
+                            <input type="number" id="startOdo" oninput="calculateKM(); resetUserEditFlag(); updatePreview();" placeholder="e.g. 69449" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Closing Odo *</label>
+                            <input type="number" id="closeOdo" oninput="calculateKM(); resetUserEditFlag(); updatePreview();" placeholder="e.g. 69478" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Total KM</label>
+                            <input type="text" id="totalKm" readonly placeholder="Auto KM" class="w-full bg-slate-950/80 border border-slate-800 rounded-xl p-2 text-xs font-bold text-emerald-400 outline-none cursor-not-allowed">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Paramedic *</label>
+                            <input type="text" id="paramedicName" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. Vinay V" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Assistant</label>
+                            <input type="text" id="assistantName" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. Simanchal" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Pilot / Driver *</label>
+                            <input type="text" id="pilotName" oninput="resetUserEditFlag(); updatePreview();" placeholder="e.g. K N Chary" class="w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-red-500 outline-none">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 6. Medicines Entry — feeds ONLY the Medicines XL sheet -->
+                <div class="bg-slate-800/80 rounded-2xl border border-amber-500/30 p-3.5 sm:p-4 shadow-xl space-y-3 backdrop-blur">
+                    <div class="flex items-center gap-2 border-b border-slate-700/80 pb-2">
+                        <div class="w-5 h-5 rounded bg-amber-500/20 text-amber-400 flex items-center justify-center text-xs">
+                            <i class="fa-solid fa-pills"></i>
+                        </div>
+                        <h2 class="text-xs font-bold uppercase tracking-wider text-amber-400">6. Medicines Used (Overall)</h2>
+                    </div>
+                    <p class="text-[11px] text-slate-500 -mt-1">One overall medicines list for the whole incident — it goes only into the Medicines XL Sheet, never into the WhatsApp report or the Cases sheet.</p>
+
+                    <div class="space-y-2.5">
+                        <label class="block text-xs font-semibold text-slate-300">Details of Medicines Used *</label>
+                        <textarea id="overallMedicines" rows="1" oninput="resetUserEditFlag(); updatePreview();" class="grow-field w-full bg-slate-900/90 border border-slate-700 rounded-xl p-2 text-xs text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-amber-500 outline-none" placeholder="e.g. Guaze Pads, Cotton & Betadine"></textarea>
+                    </div>
+                </div>
+
+            </form>
+        </div>
+
+        <!-- Right Column: Live Desktop Editable Preview (5 Cols) -->
+        <div id="desktopPreviewContainer" class="hidden lg:block lg:col-span-5">
+            <div class="sticky top-14 bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[calc(100vh-4.5rem)]">
+                
+                <!-- Preview Tabs Header -->
+                <div class="bg-slate-900 px-3 py-2 border-b border-slate-800 flex items-center justify-between">
+                    <div class="flex flex-wrap items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                        <button type="button" id="tabWaBtn" onclick="switchTab('wa')" class="px-2.5 py-1 rounded-lg text-xs font-bold text-red-300 bg-slate-800 shadow transition">
+                            WhatsApp Format
+                        </button>
+                        <button type="button" id="tabTsvBtn" onclick="switchTab('tsv')" class="px-2.5 py-1 rounded-lg text-xs font-bold text-slate-400 hover:text-slate-200 transition">
+                            Export Report to Paste in XL Sheet (Cases Data)
+                        </button>
+                        <button type="button" id="tabMedBtn" onclick="switchTab('med')" class="px-2.5 py-1 rounded-lg text-xs font-bold text-slate-400 hover:text-slate-200 transition">
+                            Export Medicines Used to XL Sheet
+                        </button>
+                    </div>
+                    <span class="text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
+                        <i class="fa-solid fa-pen"></i> Directly Editable
+                    </span>
+                </div>
+
+                <!-- Directly Editable Live Preview Textarea Area -->
+                <div class="p-3.5 flex-1 overflow-y-auto custom-scroll bg-slate-950/90 flex flex-col">
+                    <textarea id="waPreviewText" oninput="onManualPreviewEdit()" class="w-full h-full font-mono text-xs text-slate-200 bg-transparent resize-none outline-none leading-relaxed custom-scroll border-none focus:ring-0" placeholder="WhatsApp format report will be generated live here..."></textarea>
+                    <textarea id="tsvPreviewText" oninput="onManualPreviewEdit()" class="hidden w-full h-full font-mono text-[11px] text-emerald-300 bg-transparent resize-none outline-none leading-relaxed custom-scroll border-none focus:ring-0" placeholder="31-column TSV format preview will be generated live here..."></textarea>
+                    <textarea id="medPreviewText" oninput="onManualPreviewEdit()" class="hidden w-full h-full font-mono text-[11px] text-amber-200 bg-transparent resize-none outline-none leading-relaxed custom-scroll border-none focus:ring-0" placeholder="Medicines export (9 columns) will be generated live here..."></textarea>
+                </div>
+
+                <!-- Preview Action Buttons -->
+                <div class="p-3 bg-slate-900 border-t border-slate-800/80 space-y-1.5">
+                    <button type="button" onclick="copyCurrentPreview()" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-100 font-bold py-2 px-3 rounded-xl border border-slate-700 transition flex items-center justify-center gap-2 text-xs">
+                        <i class="fa-solid fa-copy text-red-400"></i> Copy Report
+                    </button>
+                    
+                    <button type="button" onclick="shareWhatsApp()" class="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold py-2 px-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/40 text-xs">
+                        <i class="fa-brands fa-whatsapp text-sm"></i> Share via WhatsApp
+                    </button>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Mobile Bottom Fixed Toolbar -->
+    <div class="lg:hidden fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 p-2 z-40 flex items-center gap-2 shadow-2xl">
+        <button type="button" onclick="openPreviewDrawer()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-2 px-3 rounded-xl border border-slate-700 text-xs flex items-center justify-center gap-1.5">
+            <i class="fa-solid fa-eye text-red-400"></i> Edit & Preview
+        </button>
+        <button type="button" onclick="copyCurrentPreview()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold p-2 rounded-xl border border-slate-700 text-xs flex items-center justify-center">
+            <i class="fa-solid fa-copy text-red-400"></i>
+        </button>
+        <button type="button" onclick="shareWhatsApp()" class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-950/40">
+            <i class="fa-brands fa-whatsapp text-sm"></i> WhatsApp
+        </button>
+    </div>
+
+    <!-- Mobile Slide-Up Preview Drawer Backdrop -->
+    <div id="drawerBackdrop" onclick="closePreviewDrawer()" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 transition-opacity"></div>
+
+    <!-- Mobile Slide-Up Preview Drawer Panel -->
+    <div id="previewDrawer" class="drawer-slide-up lg:hidden fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 rounded-t-3xl z-50 h-[85vh] flex flex-col transform translate-y-full shadow-2xl">
+        
+        <!-- Drawer Header -->
+        <div class="px-3.5 py-2.5 border-b border-slate-800 flex items-center justify-between">
+            <div class="flex flex-wrap items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                <button type="button" id="tabWaBtnMob" onclick="switchTab('wa')" class="px-2.5 py-1 rounded-lg text-xs font-bold text-red-300 bg-slate-800 transition">
+                    WhatsApp
+                </button>
+                <button type="button" id="tabTsvBtnMob" onclick="switchTab('tsv')" class="px-2.5 py-1 rounded-lg text-xs font-bold text-slate-400 hover:text-slate-200 transition">
+                    Export to XL Sheet
+                </button>
+                <button type="button" id="tabMedBtnMob" onclick="switchTab('med')" class="px-2.5 py-1 rounded-lg text-xs font-bold text-slate-400 hover:text-slate-200 transition">
+                    Medicines
+                </button>
+            </div>
+            
+            <button type="button" onclick="closePreviewDrawer()" class="text-slate-400 hover:text-white p-1">
+                <i class="fa-solid fa-xmark text-base"></i>
+            </button>
+        </div>
+
+        <!-- Drawer Body (Directly Editable Textarea) -->
+        <div class="p-3.5 flex-1 min-h-0 overflow-y-auto custom-scroll bg-slate-950/90 flex flex-col">
+            <textarea id="waPreviewTextMob" oninput="onManualPreviewEditMob()" class="w-full flex-1 min-h-0 font-mono text-xs text-slate-200 bg-transparent resize-none outline-none leading-relaxed border-none focus:ring-0" placeholder="WhatsApp format preview will appear here..."></textarea>
+            <textarea id="tsvPreviewTextMob" oninput="onManualPreviewEditMob()" class="hidden w-full flex-1 min-h-0 font-mono text-[11px] text-emerald-300 bg-transparent resize-none outline-none leading-relaxed border-none focus:ring-0" placeholder="TSV format preview will appear here..."></textarea>
+            <textarea id="medPreviewTextMob" oninput="onManualPreviewEditMob()" class="hidden w-full flex-1 min-h-0 font-mono text-[11px] text-amber-200 bg-transparent resize-none outline-none leading-relaxed border-none focus:ring-0" placeholder="Medicines export preview will appear here..."></textarea>
+        </div>
+
+        <!-- Drawer Actions -->
+        <div class="p-3 bg-slate-900 border-t border-slate-800 space-y-1.5">
+            <button type="button" onclick="shareWhatsApp()" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 px-3 rounded-xl text-xs flex items-center justify-center gap-2">
+                <i class="fa-brands fa-whatsapp text-sm"></i> Share on WhatsApp
+            </button>
+            <button type="button" onclick="copyCurrentPreview()" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold py-2 px-3 rounded-xl text-xs flex items-center justify-center gap-2">
+                <i class="fa-solid fa-copy text-red-400"></i> Copy Formatted Text
+            </button>
+        </div>
+    </div>
+
+    <!-- Confirmation Modal Dialog for Reset -->
+    <div id="resetModal" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-sm w-full p-4 space-y-4 shadow-2xl">
+            <div class="flex items-center space-x-3 text-red-400">
+                <div class="w-10 h-10 rounded-xl bg-red-500/10 flex items-center justify-center text-lg font-bold border border-red-500/20">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                </div>
+                <div>
+                    <h3 class="text-sm font-bold text-white">Reset Emergency Logger?</h3>
+                    <p class="text-xs text-slate-400">All entered patient details and timing data will be wiped clean.</p>
+                </div>
+            </div>
+            <div class="flex items-center justify-end space-x-2 pt-2 border-t border-slate-800">
+                <button type="button" onclick="closeResetModal()" class="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 transition">
+                    Cancel
+                </button>
+                <button type="button" onclick="executeResetForm()" class="px-3 py-1.5 rounded-xl text-xs font-bold text-white bg-red-600 hover:bg-red-500 transition shadow-lg shadow-red-950/50">
+                    Yes, Clear All
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="fixed top-3 right-3 bg-slate-950 text-slate-100 border border-slate-700 px-3.5 py-2 rounded-xl shadow-2xl z-50 flex items-center space-x-2 transition-all duration-300 transform -translate-y-12 opacity-0 pointer-events-none">
+        <i id="toastIcon" class="fa-solid fa-circle-check text-emerald-400 text-sm"></i>
+        <span id="toastMessage" class="text-xs font-semibold">Copied to clipboard!</span>
+    </div>
+
+    <script>
+        let victimCount = 0;
+        let currentTab = 'wa';
+        let categoryType = 'RTA'; // 'RTA' or 'MEDICAL'
+        let isUserEditingPreview = false;
+        let lastRtaType = ''; // collision type last fetched into Mechanism of Injury as " (Type)"
+        let lastMedType = ''; // condition last fetched into Nature of Illness as " (Type)"
+
+        window.onload = function() {
+            // Restore yesterday's / reloaded incident if one was in progress,
+            // otherwise start with a blank form
+            if (!restoreDraft()) executeResetForm(false);
+        };
+
+        function resetUserEditFlag() {
+            isUserEditingPreview = false;
+        }
+
+        // Auto-growing narrative fields: the box expands vertically as text gets longer
+        function autoGrow(el) {
+            el.style.height = 'auto';
+            el.style.height = el.scrollHeight + 'px';
+        }
+        // Recompute heights of every growable field (used after programmatic value changes)
+        function refreshGrowFields() {
+            document.querySelectorAll('.grow-field').forEach(autoGrow);
+        }
+        // Covers every typed edit, including dynamically added patient cards
+        document.addEventListener('input', function(e) {
+            if (e.target && e.target.classList && e.target.classList.contains('grow-field')) autoGrow(e.target);
+        });
+
+        // ===== Draft auto-save (localStorage) so a reload / phone lock never loses an incident =====
+        const DRAFT_KEY = 'orrTraumaDraftV1';
+        let draftSaveTimer = null;
+
+        function scheduleDraftSave() {
+            clearTimeout(draftSaveTimer);
+            draftSaveTimer = setTimeout(saveDraft, 400);
+        }
+
+        function saveDraft() {
+            try {
+                const val = id => (document.getElementById(id) ? document.getElementById(id).value : '') || '';
+                const victims = Array.from(document.querySelectorAll('#victimsContainer > div')).map(card => ({
+                    name: card.querySelector('.v-name') ? card.querySelector('.v-name').value : '',
+                    phone: card.querySelector('.v-phone') ? card.querySelector('.v-phone').value : '',
+                    injuries: card.querySelector('.v-injuries') ? card.querySelector('.v-injuries').value : '',
+                    condition: card.querySelector('.v-condition') ? card.querySelector('.v-condition').value : '',
+                    treatment: card.querySelector('.v-treatment') ? card.querySelector('.v-treatment').value : '',
+                    hospital: card.querySelector('.v-hospital') ? card.querySelector('.v-hospital').value : ''
+                }));
+                const meds = null; // overall medicines are stored directly on the section-6 fields
+                localStorage.setItem(DRAFT_KEY, JSON.stringify({
+                    v: 1, ts: Date.now(), category: categoryType,
+                    center: val('centerName'), date: val('incidentDate'), location: val('pickupLocation'),
+                    rtaType: val('rtaCollisionType'), mechanism: val('mechanismDetails'),
+                    medType: val('medicalConditionSelect'), medDetails: val('medicalIllnessDetails'),
+                    vehicle: val('accidentVehicleNo'), callerPreset: val('callerPreset'),
+                    callerName: val('callerInfo'), callerPhone: val('callerPhone'),
+                    ercp: val('ercpName'), manager: val('managerName'),
+                    call: val('callTime'), start: val('startTime'), reach: val('sceneReach'),
+                    depart: val('sceneDeparture'), hospReach: val('hospitalReach'),
+                    handover: val('handoverTime'), back: val('backToBase'),
+                    amb: val('ambVehicleNo'), odo1: val('startOdo'), odo2: val('closeOdo'),
+                    paramedic: val('paramedicName'), assistant: val('assistantName'), pilot: val('pilotName'),
+                    greeting: val('greetingSelect'), medicines: val('overallMedicines'),
+                    victims: victims, meds: meds
+                }));
+            } catch (e) { /* storage unavailable — draft saving is best-effort */ }
+        }
+
+        function clearDraft() {
+            clearTimeout(draftSaveTimer);
+            try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+        }
+
+        function restoreDraft() {
+            let draft = null;
+            try { draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch (e) {}
+            if (!draft || !draft.victims || !draft.victims.length) return false;
+
+            isUserEditingPreview = false;
+            setCategory(draft.category === 'MEDICAL' ? 'MEDICAL' : 'RTA');
+            const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+            set('centerName', draft.center); set('incidentDate', draft.date); set('pickupLocation', draft.location);
+            set('rtaCollisionType', draft.rtaType); lastRtaType = draft.rtaType || '';
+            set('mechanismDetails', draft.mechanism);
+            set('medicalConditionSelect', draft.medType); lastMedType = draft.medType || '';
+            set('medicalIllnessDetails', draft.medDetails);
+            set('accidentVehicleNo', draft.vehicle);
+            set('callerPreset', draft.callerPreset);
+            document.getElementById('callerInfo').classList.toggle('hidden', draft.callerPreset !== 'CUSTOM');
+            set('callerInfo', draft.callerName); set('callerPhone', draft.callerPhone);
+            set('ercpName', draft.ercp); set('managerName', draft.manager);
+            set('callTime', draft.call); set('startTime', draft.start); set('sceneReach', draft.reach);
+            set('sceneDeparture', draft.depart); set('hospitalReach', draft.hospReach);
+            set('handoverTime', draft.handover); set('backToBase', draft.back);
+            set('ambVehicleNo', draft.amb); set('startOdo', draft.odo1); set('closeOdo', draft.odo2);
+            set('paramedicName', draft.paramedic); set('assistantName', draft.assistant); set('pilotName', draft.pilot);
+            set('greetingSelect', draft.greeting);
+            set('overallMedicines', draft.medicines);
+            calculateKM();
+
+            document.getElementById('victimsContainer').innerHTML = '';
+            victimCount = 0;
+            draft.victims.forEach(v => addVictimCard(v));
+            updatePreview();
+            return true;
+        }
+
+        function setCategory(cat) {
+            categoryType = cat;
+            resetUserEditFlag();
+
+            const btnRta = document.getElementById('btnCategoryRTA');
+            const btnMed = document.getElementById('btnCategoryMedical');
+
+            const rtaBox = document.getElementById('rtaCollisionBox');
+            const medBox = document.getElementById('medicalNatureBox');
+            const vehBox = document.getElementById('accidentVehBox');
+
+            if (cat === 'RTA') {
+                btnRta.className = "py-2 px-3 rounded-xl text-xs font-bold border flex items-center justify-center gap-2 transition bg-red-600 text-white border-red-500 shadow-lg shadow-red-950/40";
+                btnMed.className = "py-2 px-3 rounded-xl text-xs font-bold border flex items-center justify-center gap-2 transition bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200";
+
+                rtaBox.classList.remove('hidden');
+                medBox.classList.add('hidden');
+                vehBox.classList.remove('hidden');
+            } else {
+                btnMed.className = "py-2 px-3 rounded-xl text-xs font-bold border flex items-center justify-center gap-2 transition bg-red-600 text-white border-red-500 shadow-lg shadow-red-950/40";
+                btnRta.className = "py-2 px-3 rounded-xl text-xs font-bold border flex items-center justify-center gap-2 transition bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200";
+
+                rtaBox.classList.add('hidden');
+                medBox.classList.remove('hidden');
+                vehBox.classList.add('hidden');
+            }
+            updatePreview();
+        }
+
+        function onRtaSelectChange() {
+            resetUserEditFlag();
+            const select = document.getElementById('rtaCollisionType');
+            const details = document.getElementById('mechanismDetails');
+
+            // Remove the bracket we fetched earlier — the user's narrative is never touched
+            const stripOwnSuffix = () => {
+                if (lastRtaType) {
+                    const suffix = ` (${lastRtaType})`;
+                    if (details.value.endsWith(suffix)) {
+                        details.value = details.value.slice(0, -suffix.length).replace(/\s+$/, '');
+                    }
+                }
+            };
+
+            if (select.value === 'CUSTOM') {
+                // Custom: drop our bracket (if any) and let them type the whole mechanism
+                stripOwnSuffix();
+                lastRtaType = '';
+                details.focus();
+                updatePreview();
+                return;
+            }
+
+            stripOwnSuffix();
+            const narrative = details.value.trim();
+            if (narrative) {
+                // Already has accident details → fetch the type in brackets after them
+                details.value = `${narrative} (${select.value})`;
+            } else {
+                // Empty → show "(Type)" with the cursor in front so they can type how it happened
+                details.value = `(${select.value})`;
+                details.focus();
+                details.setSelectionRange(0, 0);
+            }
+            lastRtaType = select.value;
+            updatePreview();
+        }
+
+        function onMedicalSelectChange() {
+            resetUserEditFlag();
+            const select = document.getElementById('medicalConditionSelect');
+            const details = document.getElementById('medicalIllnessDetails');
+
+            // Remove the condition we fetched earlier — the user's narrative is never touched
+            const stripOwnSuffix = () => {
+                if (lastMedType) {
+                    const suffix = ` (${lastMedType})`;
+                    if (details.value.endsWith(suffix)) {
+                        details.value = details.value.slice(0, -suffix.length).replace(/\s+$/, '');
+                    }
+                }
+            };
+
+            if (select.value === 'CUSTOM') {
+                stripOwnSuffix();
+                lastMedType = '';
+                details.placeholder = "Type custom medical issue / illness here...";
+                details.focus();
+                updatePreview();
+                return;
+            }
+
+            stripOwnSuffix();
+            const narrative = details.value.trim();
+            if (narrative) {
+                details.value = `${narrative} (${select.value})`;
+            } else {
+                details.value = `(${select.value})`;
+                details.focus();
+                details.setSelectionRange(0, 0);
+            }
+            lastMedType = select.value;
+            updatePreview();
+        }
+
+        function addVictimCard(data = null) {
+            victimCount++;
+            const container = document.getElementById('victimsContainer');
+            const card = document.createElement('div');
+            card.className = "bg-slate-900/90 rounded-xl border border-slate-700/90 p-3 space-y-2 relative";
+            card.id = `victimCard_${victimCount}`;
+
+            card.innerHTML = `
+                <div class="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                    <span class="text-xs font-bold text-slate-300 flex items-center gap-1">
+                        <i class="fa-solid fa-user text-red-400"></i> Victim / Patient #${victimCount}
+                    </span>
+                    ${victimCount > 1 ? `<button type="button" onclick="removeVictimCard('${card.id}')" class="text-xs text-red-400 hover:text-red-300 font-bold p-1"><i class="fa-solid fa-trash-can"></i></button>` : ''}
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <div>
+                        <label class="block text-[10px] font-semibold text-slate-400 mb-0.5">Victim Name / Age / Address / Phone *</label>
+                        <textarea rows="1" oninput="resetUserEditFlag(); updatePreview();" class="grow-field v-name w-full bg-slate-950/90 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-100 placeholder-slate-600 focus:ring-1 focus:ring-red-500 outline-none" placeholder="e.g. Mr. Ibraham 21/M"></textarea>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-semibold text-slate-400 mb-0.5">Contact Phone Number *</label>
+                        <input type="text" oninput="resetUserEditFlag(); updatePreview();" class="v-phone w-full bg-slate-950/90 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-100 placeholder-slate-600 focus:ring-1 focus:ring-red-500 outline-none" placeholder="e.g. 9885574510">
+                    </div>
+                    <div class="sm:col-span-2">
+                        <label class="block text-[10px] font-semibold text-slate-400 mb-0.5">Injuries *</label>
+                        <textarea rows="1" oninput="resetUserEditFlag(); updatePreview();" class="grow-field v-injuries w-full bg-slate-950/90 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-100 placeholder-slate-600 focus:ring-1 focus:ring-red-500 outline-none" placeholder="e.g. Laceration at right tibia region, abrasion over forehead"></textarea>
+                    </div>
+                    <div class="sm:col-span-2">
+                        <label class="block text-[10px] font-semibold text-slate-400 mb-0.5">Condition</label>
+                        <textarea rows="1" oninput="resetUserEditFlag(); updatePreview();" class="grow-field v-condition w-full bg-slate-950/90 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-100 placeholder-slate-600 focus:ring-1 focus:ring-red-500 outline-none" placeholder="e.g. Concious And Stable"></textarea>
+                    </div>
+                    <div class="sm:col-span-2">
+                        <label class="block text-[10px] font-semibold text-slate-400 mb-0.5">Treatment Given *</label>
+                        <textarea rows="1" oninput="resetUserEditFlag(); updatePreview();" class="grow-field v-treatment w-full bg-slate-950/90 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-100 placeholder-slate-600 focus:ring-1 focus:ring-red-500 outline-none" placeholder="e.g. C-Collar applied, wound care done, splint applied, IV Cannula done, IV Inj. PCM connected"></textarea>
+                    </div>
+                    <div class="sm:col-span-2">
+                        <label class="block text-[10px] font-semibold text-slate-400 mb-0.5">Shifted Hospital *</label>
+                        <textarea rows="1" oninput="resetUserEditFlag(); updatePreview();" class="grow-field v-hospital w-full bg-slate-950/90 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-100 placeholder-slate-600 focus:ring-1 focus:ring-red-500 outline-none" placeholder="e.g. Yashoda Hospital Hi-Tech City"></textarea>
+                    </div>
+
+                </div>
+            `;
+
+            container.appendChild(card);
+
+            if (data) {
+                card.querySelector('.v-name').value = data.name || '';
+                card.querySelector('.v-phone').value = data.phone || '';
+                card.querySelector('.v-injuries').value = data.injuries || '';
+                card.querySelector('.v-condition').value = data.condition || '';
+                card.querySelector('.v-treatment').value = data.treatment || '';
+                card.querySelector('.v-hospital').value = data.hospital || '';
+            }
+
+            resetUserEditFlag();
+            updatePreview();
+        }
+
+        function removeVictimCard(id) {
+            const card = document.getElementById(id);
+            if (card) {
+                card.remove();
+                resetUserEditFlag();
+                updatePreview();
+            }
+        }
+
+        function calculateKM() {
+            const start = parseFloat(document.getElementById('startOdo').value) || 0;
+            const close = parseFloat(document.getElementById('closeOdo').value) || 0;
+            const total = close >= start ? (close - start) : 0;
+            document.getElementById('totalKm').value = total > 0 ? `${total}KM` : '';
+        }
+
+        function formatDateDots(dStr) {
+            if (!dStr) return "DD.MM.YYYY";
+            const parts = dStr.split('-');
+            if (parts.length === 3) return `${parts[2]}.${parts[1]}.${parts[0]}`;
+            return dStr;
+        }
+
+        function formatDateFullMonth(dStr) {
+            if (!dStr) return "23 October 2026";
+            const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            const parts = dStr.split('-');
+            if (parts.length === 3) {
+                const mIdx = parseInt(parts[1], 10) - 1;
+                return `${parts[2]} ${months[mIdx] || 'October'} ${parts[0]}`;
+            }
+            return dStr;
+        }
+
+        function toTitleCase(str) {
+            if (!str) return '';
+            return str.replace(/\w\S*/g, function(txt){
+                return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();
+            });
+        }
+
+        function getMechanismValue() {
+            if (categoryType === 'RTA') {
+                return document.getElementById('mechanismDetails').value || '[Accident / Collision Details]';
+            } else {
+                return document.getElementById('medicalIllnessDetails').value || '[Nature of Illness]';
+            }
+        }
+
+        // Combines Caller Name (from the dropdown, or the custom text box when
+        // "Custom" is selected) and Caller Phone into one report value:
+        // "Patrolling (9848012345)" — or whichever part is filled in.
+        function getCallerValue() {
+            const preset = document.getElementById('callerPreset').value;
+            const name = (preset === 'CUSTOM'
+                ? (document.getElementById('callerInfo').value || '').trim()
+                : preset);
+            const phone = (document.getElementById('callerPhone').value || '').trim();
+            if (name && phone) return `${name} (${phone})`;
+            return name || phone;
+        }
+
+        // Shows the custom-name box only when "Custom" is chosen in the Caller dropdown
+        function onCallerSelectChange() {
+            const isCustom = document.getElementById('callerPreset').value === 'CUSTOM';
+            const customInput = document.getElementById('callerInfo');
+            customInput.classList.toggle('hidden', !isCustom);
+            if (isCustom) customInput.focus();
+            resetUserEditFlag();
+            updatePreview();
+        }
+
+        // WhatsApp Format with All Bold Headers
+        function buildWhatsAppMessage() {
+            const center = (document.getElementById('centerName').value || 'KOKAPET').toUpperCase();
+            const date = formatDateDots(document.getElementById('incidentDate').value);
+            const location = document.getElementById('pickupLocation').value || '[Pickup Location Details]';
+            const vehicleNo = document.getElementById('accidentVehicleNo').value || '[Vehicle No / NA]';
+            const caller = getCallerValue() || '[Caller Name & Phone]';
+
+            const mechanismLabel = categoryType === 'RTA' ? '*MECHANISM OF INJURY:*' : '*NATURE OF ILLNESS:*';
+            const mechanismValue = getMechanismValue();
+
+            let victimsText = '';
+            const victimCards = document.querySelectorAll('#victimsContainer > div');
+            
+            victimCards.forEach((card, index) => {
+                const name = card.querySelector('.v-name')?.value || '[Patient Name / Age]';
+                const phone = (card.querySelector('.v-phone')?.value || '').trim();
+                const injuries = card.querySelector('.v-injuries')?.value || '';
+                const condition = card.querySelector('.v-condition')?.value || '';
+                const detailLines = (injuries ? `*INJURIES:* ${injuries}\n\n` : '')
+                    + (condition ? `*CONDITION:* ${condition}\n\n` : '')
+                    || '*INJURIES:* [Injuries / Condition]\n\n';
+                const treatment = (card.querySelector('.v-treatment')?.value || '').trim();
+
+                if (victimCards.length === 1) {
+                    victimsText += `*VICTIM 1*\n\n`;
+                    victimsText += `*VICTIM NAME/AGE/ADDRESS/PHONE NO:* ${name}${phone ? '\n' + phone : ''}\n\n`;
+                    victimsText += detailLines;
+                    if (treatment) victimsText += `*TREATMENT:* ${treatment}\n\n`;
+                } else if (index === 0) {
+                    victimsText += `*VICTIM 1*\n\n`;
+                    victimsText += `*VICTIM NAME/AGE/ADDRESS/PHONE NO:* ${name}${phone ? '\n' + phone : ''}\n\n`;
+                    victimsText += detailLines;
+                    if (treatment) victimsText += `*TREATMENT:* ${treatment}\n\n`;
+                } else {
+                    victimsText += `*VICTIM-${index + 1}*\n\n`;
+                    victimsText += `*NAME:* ${name}${phone ? '\n' + phone : ''}\n\n`;
+                    victimsText += detailLines;
+                    if (treatment) victimsText += `*TREATMENT:* ${treatment}\n\n`;
+                }
+            });
+
+            // Real reports print the shifted hospital ONCE after all victims when it's
+            // the same for everyone; per-victim lines only when they differ
+            if (victimCards.length) {
+                const hospitals = Array.from(victimCards).map(c => ((c.querySelector('.v-hospital') || {}).value || '').trim());
+                const vals = hospitals.map(h => h || '[Shifted Hospital Name]');
+                const distinct = Array.from(new Set(vals));
+                if (distinct.length === 1) {
+                    victimsText += `*VICTIM SHIFTED HOSPITAL:* ${distinct[0]}\n\n`;
+                } else {
+                    vals.forEach((v, i) => { victimsText += `*VICTIM ${i + 1} SHIFTED HOSPITAL:* ${v}\n\n`; });
+                }
+            }
+
+            const ercp = document.getElementById('ercpName').value || '[Doctor Name]';
+            const manager = document.getElementById('managerName').value || '[Manager Name]';
+
+            const callTime = document.getElementById('callTime').value || '15:35';
+            const startTime = document.getElementById('startTime').value || '15:36';
+            const sceneReach = document.getElementById('sceneReach').value || '15:39';
+            const sceneDepart = document.getElementById('sceneDeparture').value || '';
+            const hospitalReach = document.getElementById('hospitalReach').value || '';
+            const handoverTime = document.getElementById('handoverTime').value || '';
+            const backToBase = document.getElementById('backToBase').value || '17:50';
+
+            const ambVehicle = document.getElementById('ambVehicleNo').value || '[Ambulance No]';
+            const startOdo = document.getElementById('startOdo').value || '0';
+            const closeOdo = document.getElementById('closeOdo').value || '0';
+            const totalKm = document.getElementById('totalKm').value || '0KM';
+
+            const paramedic = document.getElementById('paramedicName').value || '[Paramedic Name]';
+            const assistant = document.getElementById('assistantName').value || '';
+            const pilot = document.getElementById('pilotName').value || '[Pilot Name]';
+
+            // Greeting is chosen manually (their real reports are sent the NEXT morning,
+            // so it cannot be derived from the call time — a 23:10 call was sent as GOOD MORNING)
+            const greeting = document.getElementById('greetingSelect').value || 'GOOD MORNING SIR';
+            let msg = `*${greeting}*\n\n`;
+            msg += `*NORR ${center} TRAUMA CENTER*\n\n`;
+            msg += `*DATE:* ${date}\n\n`;
+            msg += `*PICKUP LOCATION:* ${location}\n\n`;
+            msg += `${mechanismLabel} ${mechanismValue}\n\n`;
+            if (categoryType === 'RTA') {
+                msg += `*ACCIDENT VEHICLE NUMBER:* ${vehicleNo}\n\n`;
+            }
+            msg += `*CALLER NAME:* ${caller}\n\n`;
+            msg += victimsText;
+            msg += `*ERCP NAME:* ${ercp}\n\n`;
+            msg += `*INFORM MANAGER NAME:* ${manager}\n\n`;
+            msg += `*CALL TIME:* ${callTime}\n\n`;
+            msg += `*START TIME:* ${startTime}\n\n`;
+            msg += `*SCENE REACH:* ${sceneReach}\n\n`;
+            if (sceneDepart) msg += `*SCENE DEPARTURE TIME:* ${sceneDepart}\n\n`;
+            if (hospitalReach) msg += `*HOSPITAL REACH TIME:* ${hospitalReach}\n\n`;
+            if (handoverTime) msg += `*HANDOVER TIME:* ${handoverTime}\n\n`;
+            msg += `*BACK TO BASE:* ${backToBase}\n\n`;
+            msg += `*AMBULANCE VEHICLE NUMBER:* ${ambVehicle}\n\n`;
+            msg += `*STARTING ODO:* ${startOdo}\n`;
+            msg += `*CLOSING ODO:* ${closeOdo}\n\n`;
+            msg += `*TOTAL KM:* ${totalKm}\n\n`;
+            msg += `*PARAMEDIC:* ${paramedic}\n\n`;
+            if (assistant) msg += `*ASSISTANT:* ${assistant}\n\n`;
+            msg += `*PILOT / DRIVER NAME:* ${pilot}\n\n`;
+            msg += `*THANK YOU*`;
+
+            return msg;
+        }
+
+        // 31-Column TSV Row Builder
+        function buildTSVString() {
+            const center = (document.getElementById('centerName').value || 'KOKAPET').toUpperCase();
+            const fullDate = formatDateFullMonth(document.getElementById('incidentDate').value);
+            const paramedic = toTitleCase(document.getElementById('paramedicName').value) || 'Vinay V';
+            const pilot = toTitleCase(document.getElementById('pilotName').value) || 'K N Chary';
+            const startOdo = document.getElementById('startOdo').value || '0';
+            const closeOdo = document.getElementById('closeOdo').value || '0';
+            const totalKm = (parseFloat(closeOdo) - parseFloat(startOdo)) || 0;
+
+            const location = document.getElementById('pickupLocation').value || 'Location';
+            const callTime = document.getElementById('callTime').value || '15:35';
+            const locTime = `${location} /${callTime}`;
+
+            const mechanism = getMechanismValue();
+            const vehicleNo = (document.getElementById('accidentVehicleNo').value || '').toUpperCase();
+            const caller = getCallerValue();
+            const ercp = toTitleCase(document.getElementById('ercpName').value) || '';
+            const manager = toTitleCase(document.getElementById('managerName').value) || 'Kishore Sir';
+
+            const startTime = document.getElementById('startTime').value || '';
+            const sceneReach = document.getElementById('sceneReach').value || '';
+            const backToBase = document.getElementById('backToBase').value || '';
+
+            const victimCards = document.querySelectorAll('#victimsContainer > div');
+            const patientCount = victimCards.length || 1;
+
+            let tsvRows = [];
+
+            victimCards.forEach((card, index) => {
+                const sno = 171 + index;
+                const name = card.querySelector('.v-name')?.value || 'Mr. Patient';
+                const phone = card.querySelector('.v-phone')?.value || 'Not Available';
+                const hospital = toTitleCase(card.querySelector('.v-hospital')?.value || 'Yashoda Hospital Hi-Tech City');
+                const injuries = card.querySelector('.v-injuries')?.value || '';
+                const condition = card.querySelector('.v-condition')?.value || '';
+                const condCombined = [injuries, condition].filter(Boolean).join(', ') || 'Stable vitals';
+                const treatment = card.querySelector('.v-treatment')?.value || 'First aid given';
+
+                const remarksPrefix = categoryType === 'RTA' ? 'C/o RTA' : 'C/o Medical';
+                const shift = shiftPhrase(hospital);
+                const remarks = `${remarksPrefix} - ${mechanism}, ${toTitleCase(condCombined)}; vitals monitored, ${treatment.toLowerCase()}${shift ? ', ' + shift : ''}.`;
+
+                // Real age/sex parsed from the name field (falls back to the old default only if unparseable)
+                const ageSex = splitNameAgeSex(name)[1] || '21/M';
+
+                const row = [
+                    sno, center, fullDate, paramedic, paramedic, pilot, startOdo, closeOdo, totalKm,
+                    locTime, toTitleCase(mechanism), vehicleNo, [treatment, shiftPhrase(hospital)].filter(Boolean).join(', '),
+                    patientCount, name, ageSex, phone, caller, hospital, ercp,
+                    treatment, manager, callTime, startTime, sceneReach, backToBase,
+                    "No", "Yes", "No", "No", remarks
+                ].map(sanitizeCell).join('\t');
+
+                tsvRows.push(row);
+            });
+
+            return tsvRows.join('\n');
+        }
+
+        // ===== Medicines / Cases XL Sheet Export (9 columns, patient-wise) =====
+        // Date as DD-MMM-YY, e.g. 02-Jan-26
+        function formatDateShortMon(dStr) {
+            if (!dStr) return "";
+            const parts = dStr.split('-');
+            if (parts.length === 3) {
+                const mons = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                return `${parts[2]}-${mons[parseInt(parts[1], 10) - 1] || ''}-${parts[0].slice(2)}`;
+            }
+            return dStr;
+        }
+
+        // Keeps export rows at their exact column count even if text contains tabs/newlines
+        function sanitizeCell(v) {
+            return String(v === null || v === undefined ? '' : v).replace(/[\t\n\r]+/g, ' ');
+        }
+
+        // Splits "Mr. Ibraham 21/M" (or "Name/30/M/Town/98..." or multi-line
+        // "Sameer 40/m\nLb nanar") into [person, ageSex]
+        function splitNameAgeSex(raw) {
+            const text = (raw || '').trim();
+            if (!text) return ['', ''];
+            const firstLine = text.split('\n')[0].trim();
+            const m = firstLine.match(/(\d{1,3}\s*\/\s*[MFmf])/);
+            if (m) {
+                const ageSex = m[1].replace(/\s+/g, '');
+                const person = firstLine
+                    .replace(m[1], '')
+                    .split('/')[0]
+                    .replace(/[\s,\-–.:]+$/, '')
+                    .trim();
+                return [person, ageSex];
+            }
+            return [firstLine.split('/')[0].replace(/[\s,\-–.:]+$/, '').trim(), ''];
+        }
+
+        // Treats NA / N.A. / "Not applicable" style hospital values as empty
+        function isNA(v) {
+            return !v || /^(na|n\/?a\.?|not applicable|nil|none)$/i.test(v.trim());
+        }
+
+        // How the hospital value appears inside the sheets:
+        // "shifted to X" normally, the raw text when it's "First aid given at scene" style,
+        // nothing at all for NA / Not applicable
+        function shiftPhrase(hospital) {
+            if (isNA(hospital)) return '';
+            if (/first aid|at scene/i.test(hospital)) return hospital;
+            return `shifted to ${hospital}`;
+        }
+
+        // Builds the 9-column medicines export: data rows only (no header line)
+        function buildMedicineTSVString() {
+            const date = formatDateShortMon(document.getElementById('incidentDate').value);
+            const location = document.getElementById('pickupLocation').value || '';
+            const callTime = document.getElementById('callTime').value || document.getElementById('startTime').value || '';
+            const locTime = callTime ? `${location}/${callTime}` : location;
+            const reason = getMechanismValue();
+
+            const rows = [];
+            const overallMedicines = document.getElementById('overallMedicines').value || '';
+            const victimCards = document.querySelectorAll('#victimsContainer > div');
+            victimCards.forEach((card, index) => {
+                const [person, ageSex] = splitNameAgeSex(card.querySelector('.v-name')?.value || '');
+                const injuriesVal = card.querySelector('.v-injuries')?.value || '';
+                const condition = card.querySelector('.v-condition')?.value || '';
+                const treatment = card.querySelector('.v-treatment')?.value || '';
+                const hospital = card.querySelector('.v-hospital')?.value || '';
+
+                let injuries = [injuriesVal, condition, treatment, shiftPhrase(hospital)].filter(Boolean).join(', ');
+
+                rows.push([
+                    index + 1, date, locTime, reason, person, ageSex, injuries, overallMedicines
+                ].map(sanitizeCell).join('\t'));
+            });
+
+            return rows.join('\n');
+        }
+
+        function updatePreview() {
+            refreshGrowFields();
+            scheduleDraftSave();
+            if (isUserEditingPreview) return; // Preserve manual tweaks made by user in the preview box
+
+            const waText = buildWhatsAppMessage();
+            const tsvText = buildTSVString();
+            const medText = buildMedicineTSVString();
+
+            document.getElementById('waPreviewText').value = waText;
+            document.getElementById('tsvPreviewText').value = tsvText;
+            document.getElementById('medPreviewText').value = medText;
+
+            document.getElementById('waPreviewTextMob').value = waText;
+            document.getElementById('tsvPreviewTextMob').value = tsvText;
+            document.getElementById('medPreviewTextMob').value = medText;
+        }
+
+        function onManualPreviewEdit() {
+            isUserEditingPreview = true;
+            // Sync desktop edit to mobile preview drawer
+            document.getElementById('waPreviewTextMob').value = document.getElementById('waPreviewText').value;
+            document.getElementById('tsvPreviewTextMob').value = document.getElementById('tsvPreviewText').value;
+            document.getElementById('medPreviewTextMob').value = document.getElementById('medPreviewText').value;
+        }
+
+        function onManualPreviewEditMob() {
+            isUserEditingPreview = true;
+            // Sync mobile edit to desktop preview area
+            document.getElementById('waPreviewText').value = document.getElementById('waPreviewTextMob').value;
+            document.getElementById('tsvPreviewText').value = document.getElementById('tsvPreviewTextMob').value;
+            document.getElementById('medPreviewText').value = document.getElementById('medPreviewTextMob').value;
+        }
+
+        function switchTab(tab) {
+            currentTab = tab;
+            const btnCls = (active) => active ? "px-2.5 py-1 rounded-lg text-xs font-bold text-red-300 bg-slate-800 transition" : "px-2.5 py-1 rounded-lg text-xs font-bold text-slate-400 hover:text-slate-200 transition";
+
+            ['wa', 'tsv', 'med'].forEach(t => {
+                document.getElementById(t + 'PreviewText').classList.toggle('hidden', t !== tab);
+                document.getElementById(t + 'PreviewTextMob').classList.toggle('hidden', t !== tab);
+            });
+
+            document.getElementById('tabWaBtn').className = btnCls(tab === 'wa');
+            document.getElementById('tabTsvBtn').className = btnCls(tab === 'tsv');
+            document.getElementById('tabMedBtn').className = btnCls(tab === 'med');
+
+            document.getElementById('tabWaBtnMob').className = btnCls(tab === 'wa');
+            document.getElementById('tabTsvBtnMob').className = btnCls(tab === 'tsv');
+            document.getElementById('tabMedBtnMob').className = btnCls(tab === 'med');
+        }
+
+        // Which preview box matches the active tab
+        function currentPreviewEl() {
+            const ids = { wa: 'waPreviewText', tsv: 'tsvPreviewText', med: 'medPreviewText' };
+            return document.getElementById(ids[currentTab] || 'waPreviewText');
+        }
+
+        function copyCurrentPreview() {
+            const textToCopy = currentPreviewEl().value;
+            
+            const textarea = document.createElement('textarea');
+            textarea.value = textToCopy;
+            document.body.appendChild(textarea);
+            textarea.select();
+            
+            try {
+                document.execCommand('copy');
+                const msgs = {
+                    wa: "WhatsApp report copied!",
+                    tsv: "Report row copied — paste in XL sheet!",
+                    med: "Medicines report copied — paste in XL sheet!"
+                };
+                showToast(msgs[currentTab] || "Copied!");
+            } catch (err) {
+                showToast("Failed to copy text");
+            }
+            document.body.removeChild(textarea);
+        }
+
+        function shareWhatsApp() {
+            const text = currentPreviewEl().value;
+            const encodedText = encodeURIComponent(text);
+            window.open(`https://wa.me/?text=${encodedText}`, '_blank');
+        }
+
+        function openPreviewDrawer() {
+            document.getElementById('drawerBackdrop').classList.remove('hidden');
+            const drawer = document.getElementById('previewDrawer');
+            drawer.classList.remove('translate-y-full');
+        }
+
+        function closePreviewDrawer() {
+            document.getElementById('drawerBackdrop').classList.add('hidden');
+            const drawer = document.getElementById('previewDrawer');
+            drawer.classList.add('translate-y-full');
+        }
+
+        function confirmResetForm() {
+            document.getElementById('resetModal').classList.remove('hidden');
+        }
+
+        function closeResetModal() {
+            document.getElementById('resetModal').classList.add('hidden');
+        }
+
+        function executeResetForm(notify = true) {
+            closeResetModal();
+            isUserEditingPreview = false;
+
+            // Reset standard HTML form fields
+            document.getElementById('incidentForm').reset();
+
+            // Set Category to RTA
+            setCategory('RTA');
+
+            // Reset Center Name & Date
+            document.getElementById('centerName').value = "KOKAPET";
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('incidentDate').value = today;
+
+            // Clear Specific Inputs
+            document.getElementById('pickupLocation').value = "";
+            document.getElementById('rtaCollisionType').selectedIndex = 0;
+            document.getElementById('mechanismDetails').value = "";
+            lastRtaType = '';
+            lastMedType = '';
+            document.getElementById('medicalConditionSelect').selectedIndex = 0;
+            document.getElementById('medicalIllnessDetails').value = "";
+            document.getElementById('accidentVehicleNo').value = "";
+            document.getElementById('callerInfo').value = "";
+            document.getElementById('callerInfo').classList.add('hidden');
+            document.getElementById('callerPhone').value = "";
+            document.getElementById('ercpName').value = "";
+            document.getElementById('managerName').value = "";
+
+            document.getElementById('callTime').value = "";
+            document.getElementById('startTime').value = "";
+            document.getElementById('sceneReach').value = "";
+            document.getElementById('sceneDeparture').value = "";
+            document.getElementById('hospitalReach').value = "";
+            document.getElementById('handoverTime').value = "";
+            document.getElementById('backToBase').value = "";
+
+            document.getElementById('ambVehicleNo').value = "";
+            document.getElementById('startOdo').value = "";
+            document.getElementById('closeOdo').value = "";
+            document.getElementById('totalKm').value = "";
+
+            document.getElementById('paramedicName').value = "";
+            document.getElementById('assistantName').value = "";
+            document.getElementById('pilotName').value = "";
+
+            // Re-initialize victim cards with 1 clean empty card
+            document.getElementById('victimsContainer').innerHTML = '';
+            victimCount = 0;
+            addVictimCard();
+
+            updatePreview();
+            clearDraft();
+
+            if (notify) {
+                showToast("Form cleared successfully!");
+            }
+        }
+
+        // Optional loader for testing with real sample data
+        function loadSampleData() {
+            isUserEditingPreview = false;
+            setCategory('RTA');
+
+            document.getElementById('centerName').value = "KOKAPET";
+            document.getElementById('incidentDate').value = "2026-10-23";
+            document.getElementById('pickupLocation').value = "LHS 1+600 Towards Kokapet to Neopolis";
+            document.getElementById('rtaCollisionType').value = "Rear-End Collision";
+            document.getElementById('mechanismDetails').value = "Car hit to cement container (Rear-End Collision)";
+            lastRtaType = "Rear-End Collision";
+            document.getElementById('accidentVehicleNo').value = "AP12G0900";
+            document.getElementById('callerPreset').value = "CUSTOM";
+            document.getElementById('callerInfo').classList.remove('hidden');
+            document.getElementById('callerInfo').value = "IRB Srinivas Sir AGM";
+            document.getElementById('callerPhone').value = "9000566141";
+            document.getElementById('ercpName').value = "Dr. Tejasvi Sir";
+            document.getElementById('managerName').value = "Kishore Sir";
+
+            document.getElementById('callTime').value = "15:35";
+            document.getElementById('startTime').value = "15:36";
+            document.getElementById('sceneReach').value = "15:39";
+            document.getElementById('sceneDeparture').value = "15:43";
+            document.getElementById('hospitalReach').value = "16:00";
+            document.getElementById('handoverTime').value = "16:02";
+            document.getElementById('backToBase').value = "17:50";
+
+            document.getElementById('ambVehicleNo').value = "TS 11 UC 9726";
+            document.getElementById('startOdo').value = "69449";
+            document.getElementById('closeOdo').value = "69478";
+            calculateKM();
+
+            document.getElementById('paramedicName').value = "Vinay V";
+            document.getElementById('assistantName').value = "Simanchal";
+            document.getElementById('pilotName').value = "K N Chary";
+
+            document.getElementById('victimsContainer').innerHTML = '';
+            victimCount = 0;
+            addVictimCard({
+                name: "Mr. Ibraham 21/M",
+                phone: "CELL: 9885574510",
+                injuries: "Closed fracture at RT femur, Facial lacerations",
+                condition: "Semi-conscious",
+                treatment: "C-Collar applied, wound care done, splint applied, IV Cannula done, IV Inj. PCM connected",
+                hospital: "Yashoda Hospital Hi-Tech City"
+            });
+            document.querySelector('#overallMedicines').value = "Guaze Pads, Cotton & Betadine";
+
+            updatePreview();
+            showToast("Sample incident data loaded!");
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toastMessage');
+            toastMessage.textContent = msg;
+
+            toast.classList.remove('-translate-y-12', 'opacity-0');
+            setTimeout(() => {
+                toast.classList.add('-translate-y-12', 'opacity-0');
+            }, 2500);
+        }
+    </script>
+</body>
+</html>
